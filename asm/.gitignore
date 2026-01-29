@@ -1,0 +1,20 @@
+# Build outputs
+*.prg
+*.d64
+*.lst
+labels.txt
+demo.bin
+expected.hex
+
+# Copied files for disk images
+MAIN
+LOADER
+
+# Editor/OS files
+.DS_Store
+*~
+*.swp
+
+# Python
+__pycache__/
+*.pyc

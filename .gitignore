@@ -1,0 +1,21 @@
+# Build outputs
+*.prg
+*.o
+*.bin
+labels.txt
+
+# Editor backups
+*~
+*.swp
+
+# macOS
+.DS_Store
+
+# C build artifacts
+c/test
+c/visualize
+c/gen_cube_expected
+c/gen_expected_asm
+c/scanline_test
+c/single_tri_bin
+c/single_tri_test
