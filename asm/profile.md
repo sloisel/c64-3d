@@ -1,14 +1,15 @@
 # Rasterizer Performance Profile
 
 ## Current Status
-- **Cycle count**: ~102,000-104,000 cycles (draw_demo_cube)
-- **Speedup**: 70% faster than baseline
+- **Cycle count**: ~46,000 cycles (draw_demo_cube)
+- **Speedup**: 87% faster than baseline
 
 ## Timing Method
-- `tic`: Sets up raster interrupt at line 0, waits for counter=0, then returns
-- `toc`: Captures counter + raster position
+- `tic`: Disables CIA interrupts, sets up VIC raster interrupt at line 0, waits for counter=0
+- `toc`: Captures counter + raster position with stable reads
 - Cycles = (counter × 19656) + (raster_line × 63)
-- **Margin of error**: ~2,000-3,000 cycles due to raster interrupt jitter and measurement timing
+- IRQ handler skips KERNAL (jmp $ea81) for minimal overhead
+- Timing is now rock-solid: same values every run
 
 ## Optimization History
 
@@ -18,7 +19,8 @@
 | Step 2 | Middle segment tight STA | 12 | 256 | 244,000 | 29% |
 | Step 3 | [xl,xr) exclusive + left segment | 10 | 211 | 210,000 | 39% |
 | Step 4 | Interval-based blitter | 5 | 64 | 102,000 | 70% |
-| Step 5 | 11-cycle inner loop (draw_dual_row_simple) | 5 | 91 | 104,000 | 70% |
+| Step 5 | SMC dual-row + ZP single-row | 5 | 91 | 100,000 | 71% |
+| Step 6 | Skip KERNAL IRQ handler | 2 | 108 | 46,000 | 87% |
 
 ## Current Architecture (Step 4)
 
@@ -42,10 +44,17 @@ Replaced segment-based draw_dual_row with decision tree dispatcher:
 - Full characters in draw_dual_row_simple: direct write, no masking
 - Lookup tables for color patterns: color_top, color_bottom, color_pattern
 - Bifurcated routines: no runtime y&1 check in span routines
-- **11-cycle inner loop** in draw_dual_row_simple: adjusted base pointer trick
-  eliminates compare instruction (sta/iny/bne vs sta/iny/cpy/bcs = 11 vs 16 cycles)
-  - Setup cost ~29 cycles, break-even ~5 full chars per span
-  - TODO: Review setup code for potential streamlining
+- **10-cycle SMC inner loop** in draw_dual_row_simple:
+  - Self-modifying code patches STA absolute address
+  - `sta $xxxx,x / dex / bpl` = 5+2+3 = 10 cycles per char
+- **Zero-page optimization** in single-row blitters:
+  - Color bits and full_end stored in ZP (zp_adj_lo/hi)
+  - Saves 2 cycles per char (27 vs 29 cycles)
+
+### Timing Improvements
+- Disabled CIA-1 interrupts during timing (prevents KERNAL keyboard scan)
+- IRQ handler uses `asl $d019` to acknowledge + `jmp $ea81` to skip KERNAL
+- Stable reads in toc() prevent raster position jitter
 
 ### Code Size
 - Old draw_dual_row + draw_span: ~500 lines

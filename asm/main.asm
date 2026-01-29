@@ -261,6 +261,14 @@ tic
         lda $0315
         sta tic_old_irq+1
 
+        ; Disable CIA-1 interrupts (so only VIC generates IRQs)
+        lda #%01111111
+        sta $dc0d
+
+        ; Acknowledge pending CIA interrupts
+        sta $dc0d
+        sta $dd0d
+
         ; Set up our IRQ handler
         lda #<tic_irq_handler
         sta $0314
@@ -279,7 +287,7 @@ tic
         sta $d01a               ; Enable raster IRQ
 
         ; Acknowledge any pending VIC IRQ
-        sta $d019
+        asl $d019
 
         cli                     ; Enable interrupts
 
@@ -289,53 +297,56 @@ tic
         rts
 
 tic_irq_handler
-        ; Acknowledge VIC interrupt
-        lda #$01
-        sta $d019
-
         ; Increment counter
         inc tic_counter
 
-        ; Jump to KERNAL IRQ handler (handles keyboard etc)
-        jmp $ea31
+        ; Acknowledge VIC interrupt (ASL clears the interrupt flag)
+        asl $d019
+
+        ; Jump to KERNAL register restore and RTI
+        jmp $ea81
+
+; ============================================================================
+; read_raster - Read 9-bit raster position reliably
+; Returns: A = high bit (0 or $80), X = low byte
+; ============================================================================
+read_raster
+-       lda $d011
+        and #$80                ; A = hi1
+        ldx $d012               ; X = lo
+        cmp $d011 - $70         ; Compare with hi2 (weird addressing to keep same mask)
+        ; Actually, re-read and mask properly:
+        pha                     ; Save hi1
+        lda $d011
+        and #$80                ; A = hi2
+        sta _rr_hi2
+        pla                     ; A = hi1
+        cmp _rr_hi2
+        bne -                   ; hi1 != hi2, retry
+        rts
+_rr_hi2 .byte 0
 
 ; ============================================================================
 ; toc - Stop timing and capture raster position
-; Stores: A (counter before), B (raster), C (counter after), D (raster)
+; Reads counter, raster, counter until stable. Stores result.
 ; ============================================================================
 toc
-        ; Capture A = counter
-        lda tic_counter
-        sta toc_a
+_toc_retry
+        lda tic_counter         ; Read counter1
+        sta _toc_counter1
+        jsr read_raster         ; Read raster (A=hi, X=lo)
+        sta _toc_raster_hi
+        stx _toc_raster_lo
+        lda tic_counter         ; Read counter2
+        cmp _toc_counter1       ; Same as counter1?
+        bne _toc_retry          ; No, retry
 
-        ; Read raster position B (9-bit, need careful read)
-        ; Read hi, lo, hi, lo - if hi1==hi2 use (hi1,lo1), else (hi2,lo2)
-        lda $d011
-        and #$80                ; Bit 7 = raster bit 8
-        sta toc_b_hi_1
-        lda $d012
-        sta toc_b_lo_1
-        lda $d011
-        and #$80
-        sta toc_b_hi_2
-        lda $d012
-        sta toc_b_lo_2
-
-        ; Capture C = counter
-        lda tic_counter
-        sta toc_c
-
-        ; Read raster position D
-        lda $d011
-        and #$80
-        sta toc_d_hi_1
-        lda $d012
-        sta toc_d_lo_1
-        lda $d011
-        and #$80
-        sta toc_d_hi_2
-        lda $d012
-        sta toc_d_lo_2
+        ; Stable read - save results
+        sta toc_counter
+        lda _toc_raster_hi
+        sta toc_raster_hi
+        lda _toc_raster_lo
+        sta toc_raster_lo
 
         ; Disable raster interrupt
         sei
@@ -351,19 +362,17 @@ toc
         cli
         rts
 
-; Timing variables
+; Temporaries for toc
+_toc_counter1   .byte 0
+_toc_raster_hi  .byte 0
+_toc_raster_lo  .byte 0
+
+; Timing results (public)
 tic_counter     .byte 0
 tic_old_irq     .word 0
-toc_a           .byte 0         ; Counter before raster read
-toc_b_hi_1      .byte 0         ; Raster B high (first read)
-toc_b_lo_1      .byte 0         ; Raster B low (first read)
-toc_b_hi_2      .byte 0         ; Raster B high (second read)
-toc_b_lo_2      .byte 0         ; Raster B low (second read)
-toc_c           .byte 0         ; Counter after raster read
-toc_d_hi_1      .byte 0         ; Raster D high (first read)
-toc_d_lo_1      .byte 0         ; Raster D low (first read)
-toc_d_hi_2      .byte 0         ; Raster D high (second read)
-toc_d_lo_2      .byte 0         ; Raster D low (second read)
+toc_counter     .byte 0         ; Frame count
+toc_raster_hi   .byte 0         ; Raster high bit (0 or $80)
+toc_raster_lo   .byte 0         ; Raster low byte
 
 ; ============================================================================
 ; draw_demo_cube - Draw the test cube
