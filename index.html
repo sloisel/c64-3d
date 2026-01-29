@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>C64 3D - Spinning Octahedron</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #111;
+            color: #ccc;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        h1 {
+            color: #fff;
+            margin-bottom: 10px;
+            font-size: 1.5em;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+        }
+        #game-container {
+            width: 640px;
+            height: 480px;
+            max-width: 100%;
+            position: relative;
+        }
+        #game {
+            width: 100%;
+            height: 100%;
+        }
+        #start-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border-radius: 8px;
+        }
+        #start-overlay:hover {
+            background: #1a1a1a;
+        }
+        #start-overlay .play-btn {
+            width: 80px;
+            height: 80px;
+            border: 3px solid #6bf;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        #start-overlay .play-btn::after {
+            content: '';
+            width: 0;
+            height: 0;
+            border-top: 18px solid transparent;
+            border-bottom: 18px solid transparent;
+            border-left: 30px solid #6bf;
+            margin-left: 8px;
+        }
+        #start-overlay .label {
+            color: #6bf;
+            font-size: 1.2em;
+        }
+        #start-overlay .hint {
+            color: #666;
+            font-size: 0.8em;
+            margin-top: 10px;
+        }
+        .info {
+            margin-top: 20px;
+            max-width: 800px;
+            text-align: center;
+            font-size: 0.85em;
+            line-height: 1.6;
+        }
+        .info a {
+            color: #6bf;
+        }
+    </style>
+</head>
+<body>
+    <h1>C64 3D Rasterizer</h1>
+    <p class="subtitle">Real-time 3D on a 1MHz 6502</p>
+
+    <div id="game-container">
+        <div id="start-overlay" onclick="startEmulator()">
+            <div class="play-btn"></div>
+            <div class="label">Click to Play</div>
+            <div class="hint">Commodore 64 emulator will start</div>
+        </div>
+        <div id="game"></div>
+    </div>
+
+    <p class="info">
+        Spinning octahedron rendered in real-time on a Commodore 64.<br>
+        80x50 chunky pixels, triple-buffered, with backface culling and painter's algorithm sorting.<br>
+        <a href="https://github.com/sloisel/c64-3d">Source code on GitHub</a>
+    </p>
+
+    <script>
+        function startEmulator() {
+            // Hide the overlay
+            document.getElementById('start-overlay').style.display = 'none';
+
+            // Configure EmulatorJS
+            window.EJS_player = '#game';
+            window.EJS_core = 'vice_x64sc';
+            window.EJS_gameUrl = 'asm/octa.prg';
+            window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
+            window.EJS_startOnLoaded = true;
+
+            // Load the emulator script
+            var script = document.createElement('script');
+            script.src = 'https://cdn.emulatorjs.org/stable/data/loader.js';
+            document.body.appendChild(script);
+        }
+    </script>
+</body>
+</html>
