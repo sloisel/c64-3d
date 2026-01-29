@@ -1,5 +1,6 @@
 # Build outputs
 *.prg
+!asm/octa.prg
 *.o
 *.bin
 labels.txt
