@@ -587,9 +587,10 @@ _dst_start
         sta zp_screen_hi
 
         ; Build color bits for top row: (color << 6) | (color << 4)
+        ; Store in zp_adj_lo for fast inner loop access
         ldx zp_color
         lda color_top,x
-        sta _dst_color_bits
+        sta zp_adj_lo           ; reuse as color_bits (ZP = 3 cycle ora)
 
         ; Compute char ranges
         ; char_start = xl >> 1
@@ -602,10 +603,10 @@ _dst_start
         adc #1
         lsr a
         sta _dst_full_start
-        ; full_end = xr >> 1
+        ; full_end = xr >> 1 - store in ZP for fast cpy
         lda zp_xr
         lsr a
-        sta _dst_full_end
+        sta zp_adj_hi           ; reuse as full_end (ZP = 3 cycle cpy)
 
         ; Left partial (if char_start < full_start, i.e., xl is odd)
         lda _dst_char_start
@@ -613,7 +614,7 @@ _dst_start
         bcs _dst_full_loop
         ; RMW with mask $30 (right pixel only)
         tay
-        lda _dst_color_bits
+        lda zp_adj_lo
         and #$30                ; mask to right pixel only
         sta _dst_temp
         lda (zp_screen_lo),y
@@ -624,12 +625,12 @@ _dst_start
 _dst_full_loop
         ldy _dst_full_start
 _dst_full_next
-        cpy _dst_full_end
+        cpy zp_adj_hi           ; 3 cycles (ZP) vs 4 cycles (abs)
         bcs _dst_right_partial
         ; RMW with mask $F0 (both pixels)
         lda (zp_screen_lo),y
         and #$0f                ; ~$F0
-        ora _dst_color_bits
+        ora zp_adj_lo           ; 3 cycles (ZP) vs 4 cycles (abs)
         sta (zp_screen_lo),y
         iny
         bne _dst_full_next      ; Always taken (Y < 40)
@@ -641,7 +642,7 @@ _dst_right_partial
         bcc _dst_done
         ; RMW with mask $C0 (left pixel only)
         ; Y = full_end
-        lda _dst_color_bits
+        lda zp_adj_lo
         and #$c0                ; mask to left pixel only
         sta _dst_temp
         lda (zp_screen_lo),y
@@ -653,10 +654,8 @@ _dst_done
         rts
 
 ; Temporaries for draw_span_top
-_dst_color_bits .byte 0
 _dst_char_start .byte 0
 _dst_full_start .byte 0
-_dst_full_end   .byte 0
 _dst_temp       .byte 0
 
 ; ============================================================================
@@ -693,9 +692,10 @@ _dsb_start
         sta zp_screen_hi
 
         ; Build color bits for bottom row: (color << 2) | color
+        ; Store in zp_adj_lo for fast inner loop access
         ldx zp_color
         lda color_bottom,x
-        sta _dsb_color_bits
+        sta zp_adj_lo           ; reuse as color_bits (ZP = 3 cycle ora)
 
         ; Compute char ranges (same as draw_span_top)
         ; char_start = xl >> 1
@@ -708,10 +708,10 @@ _dsb_start
         adc #1
         lsr a
         sta _dsb_full_start
-        ; full_end = xr >> 1
+        ; full_end = xr >> 1 - store in ZP for fast cpy
         lda zp_xr
         lsr a
-        sta _dsb_full_end
+        sta zp_adj_hi           ; reuse as full_end (ZP = 3 cycle cpy)
 
         ; Left partial (if char_start < full_start, i.e., xl is odd)
         lda _dsb_char_start
@@ -719,7 +719,7 @@ _dsb_start
         bcs _dsb_full_loop
         ; RMW with mask $03 (right pixel only)
         tay
-        lda _dsb_color_bits
+        lda zp_adj_lo
         and #$03                ; mask to right pixel only
         sta _dsb_temp
         lda (zp_screen_lo),y
@@ -730,12 +730,12 @@ _dsb_start
 _dsb_full_loop
         ldy _dsb_full_start
 _dsb_full_next
-        cpy _dsb_full_end
+        cpy zp_adj_hi           ; 3 cycles (ZP) vs 4 cycles (abs)
         bcs _dsb_right_partial
         ; RMW with mask $0F (both pixels)
         lda (zp_screen_lo),y
         and #$f0                ; ~$0F
-        ora _dsb_color_bits
+        ora zp_adj_lo           ; 3 cycles (ZP) vs 4 cycles (abs)
         sta (zp_screen_lo),y
         iny
         bne _dsb_full_next      ; Always taken (Y < 40)
@@ -747,7 +747,7 @@ _dsb_right_partial
         bcc _dsb_done
         ; RMW with mask $0C (left pixel only)
         ; Y = full_end
-        lda _dsb_color_bits
+        lda zp_adj_lo
         and #$0c                ; mask to left pixel only
         sta _dsb_temp
         lda (zp_screen_lo),y
@@ -759,10 +759,8 @@ _dsb_done
         rts
 
 ; Temporaries for draw_span_bottom
-_dsb_color_bits .byte 0
 _dsb_char_start .byte 0
 _dsb_full_start .byte 0
-_dsb_full_end   .byte 0
 _dsb_temp       .byte 0
 
 ; ============================================================================
