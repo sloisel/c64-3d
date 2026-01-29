@@ -17,13 +17,14 @@
 ; $2D00-$2DFF: negsqr_hi (256 bytes)
 ; $2E00-$2E3F: recip_lo (64 bytes)
 ; $2E40-$2E7F: recip_hi (64 bytes)
-; $2E80-$2EFF: (padding)
+; $2E80-$2EFF: recip_persp (128 bytes) - perspective reciprocal (128-255)
 ; $2F00-$30FF: smult_sq1_lo (512 bytes)
 ; $3100-$32FF: smult_sq1_hi (512 bytes)
 ; $3300-$34FF: smult_sq2_lo (512 bytes)
 ; $3500-$36FF: smult_sq2_hi (512 bytes)
 ; $3700-$37FF: smult_eorx (256 bytes)
 ; $3800+:      Code + test data
+; (After code): rcos (256 bytes), rsin (256 bytes) - rotation tables
 
         .include "macros.asm"
 
@@ -100,6 +101,21 @@ recip_hi
         .byte 0                 ; [0] undefined
         .for n = 1, n < 64, n += 1
             .byte >(65536/n)
+        .endfor
+
+; Perspective reciprocal table for 3D projection
+; Table starts at z8=128 (indices 0-127 map to z8 128-255)
+; recip_persp[z8-128] = 8192 / z8 for z8 = 128..255
+; z8 = world_z >> 3 (k=3 shift parameter)
+; For pz=1500, z8 ≈ 187, giving recip ≈ 44
+; screen_offset = highbyte(world_x * recip)
+; Usage: index = (world_z >> 3) - 128, then recip_persp[index]
+; Note: z8 < 128 indicates object too close - handle separately
+        * = $2e80
+recip_persp
+        .for i = 0, i < 128, i += 1
+            ; z8 = i + 128 (values 128-255)
+            .byte (8192 / (i + 128))
         .endfor
 
 ; Padding to next page
@@ -195,6 +211,10 @@ zp_dx_temp      = $2a
 zp_dy_temp      = $2b
 zp_adj_lo       = $2c   ; Adjusted pointer for fast blitter
 zp_adj_hi       = $2d
+zp_dx_ac2_lo    = $2e   ; dx_ac * 2 (low) - precomputed for dual-row
+zp_dx_ac2_hi    = $2f   ; dx_ac * 2 (high)
+zp_dx_short2_lo = $30   ; dx_short * 2 (low)
+zp_dx_short2_hi = $31   ; dx_short * 2 (high)
 
 ; ----------------------------------------------------------------------------
 ; Constants
@@ -204,6 +224,11 @@ SCREEN_WIDTH    = 80
 SCREEN_HEIGHT   = 50
 CHAR_WIDTH      = 40
 CHAR_HEIGHT     = 25
+
+; Triple buffer addresses (high bytes)
+SCREEN_BUF_0    = $04           ; $0400
+SCREEN_BUF_1    = $08           ; $0800
+SCREEN_BUF_2    = $0c           ; $0C00
 
 ; Pixel masks for 2x2 chunky pixels in multicolor char
 PIXEL_TL_MASK   = $c0
@@ -225,24 +250,209 @@ main
         ; Initialize math library
         jsr mul8x8_init
 
+        ; Initialize triple buffering
+        jsr triple_buf_init
+
+        ; Initialize octahedron mesh data
+        jsr init_octahedron
+
+        ; Animation loop
+_anim_loop
+        ; Wait until we can draw (display buffer != draw buffer)
+        ; This should rarely block with triple buffering
+-       lda buf_display
+        cmp buf_draw
+        beq -
+
         ; Clear screen to color 0
         lda #0
         jsr clear_screen
 
-        ; Start timing
-        jsr tic
+        ; Draw octahedron
+        jsr draw_octahedron
 
-        ; Draw isometric cube (same as C --demo)
-        jsr draw_demo_cube
+        ; Queue page flip: the buffer we just drew becomes the next to display
+        lda buf_draw
+        sta buf_ready
 
-        ; Stop timing
-        jsr toc
+        ; Advance to next draw buffer (0 -> 1 -> 2 -> 0)
+        jsr advance_draw_buffer
 
-        ; Compare screen RAM with expected data
-        jsr compare_screen
+        ; Increment theta by 2 (slower rotation)
+        lda mesh_theta
+        clc
+        adc #2
+        sta mesh_theta
 
-        ; Infinite loop - result is in $02-$03 (0 = PASS)
--       jmp -
+        jmp _anim_loop
+
+; ============================================================================
+; Triple buffer management
+; ============================================================================
+
+; Buffer state variables
+buf_display     .byte SCREEN_BUF_0      ; Currently displayed (VIC reads this)
+buf_ready       .byte SCREEN_BUF_0      ; Ready to display (queued for next vblank)
+buf_draw        .byte SCREEN_BUF_1      ; Currently being drawn to
+
+; Buffer table for cycling (0->1->2->0)
+buf_table       .byte SCREEN_BUF_0, SCREEN_BUF_1, SCREEN_BUF_2
+buf_next        .byte 1, 2, 0           ; Index of next buffer
+
+; Timing counters for FPS measurement
+vsync_counter   .word 0                 ; Incremented every vblank IRQ
+frame_counter   .word 0                 ; Incremented on actual page flip
+
+; ----------------------------------------------------------------------------
+; triple_buf_init - Initialize triple buffering with raster IRQ
+; ----------------------------------------------------------------------------
+triple_buf_init
+        sei
+
+        ; Initialize buffer state
+        lda #SCREEN_BUF_0
+        sta buf_display
+        sta buf_ready
+        lda #SCREEN_BUF_1
+        sta buf_draw
+
+        ; Patch SMC for initial draw buffer
+        jsr patch_screen_base
+
+        ; Disable CIA-1 interrupts
+        lda #$7f
+        sta $dc0d
+        sta $dd0d               ; Also CIA-2
+
+        ; Set up raster interrupt at line 250 (in vblank)
+        lda $d011
+        and #$7f                ; Clear bit 8 of raster
+        sta $d011
+        lda #250
+        sta $d012
+
+        ; Install our IRQ handler
+        lda #<vblank_irq
+        sta $0314
+        lda #>vblank_irq
+        sta $0315
+
+        ; Enable raster interrupt
+        lda #$01
+        sta $d01a
+
+        ; Acknowledge any pending
+        asl $d019
+
+        cli
+        rts
+
+; ----------------------------------------------------------------------------
+; vblank_irq - Raster interrupt handler for page flipping
+; ----------------------------------------------------------------------------
+vblank_irq
+        ; Increment vsync counter (always, every vblank)
+        inc vsync_counter
+        bne +
+        inc vsync_counter+1
++
+        ; Check if we're flipping to a new buffer
+        lda buf_ready
+        cmp buf_display
+        beq _no_flip
+        ; New frame - increment frame counter
+        inc frame_counter
+        bne +
+        inc frame_counter+1
++
+_no_flip
+        ; Page flip: display the ready buffer
+        lda buf_ready
+        sta buf_display
+
+        ; Update VIC screen pointer ($D018)
+        ; Screen at $0400: bits 7-4 = 1 ($1x)
+        ; Screen at $0800: bits 7-4 = 2 ($2x)
+        ; Screen at $0C00: bits 7-4 = 3 ($3x)
+        ; Charset at $2000: bits 3-0 = 8 ($x8)
+        ; So: $0400 = $18, $0800 = $28, $0C00 = $38
+        asl a                   ; $04->$08, $08->$10, $0C->$18
+        asl a                   ; $08->$10, $10->$20, $18->$30
+        asl a                   ; $10->$20, $20->$40, $30->$60... wait this is wrong
+
+        ; Let me recalculate. buf_display is $04, $08, or $0C
+        ; VIC $D018: high nibble = screen/1024, low nibble = charset/2048 * 2
+        ; Screen $0400 = 1*1024, so high nibble = 1
+        ; Screen $0800 = 2*1024, so high nibble = 2
+        ; Screen $0C00 = 3*1024, so high nibble = 3
+        ; Charset $2000 = 4*2048, low nibble = 8
+        ; So we need: ($04 -> $18), ($08 -> $28), ($0C -> $38)
+        ; That's: (buf >> 2) << 4 | 8 = (buf << 2) | 8
+        lda buf_display
+        asl a
+        asl a                   ; $04->$10, $08->$20, $0C->$30
+        ora #$08                ; Add charset bits
+        sta $d018
+
+        ; Acknowledge interrupt
+        asl $d019
+
+        ; Return from interrupt (skip KERNAL)
+        pla
+        tay
+        pla
+        tax
+        pla
+        rti
+
+; ----------------------------------------------------------------------------
+; advance_draw_buffer - Move to next draw buffer and patch SMC
+; ----------------------------------------------------------------------------
+advance_draw_buffer
+        ; Find current buffer index
+        ldx #0
+        lda buf_draw
+-       cmp buf_table,x
+        beq +
+        inx
+        cpx #3
+        bne -
+        ; Shouldn't happen, default to 0
+        ldx #0
++
+        ; Get next buffer
+        lda buf_next,x
+        tax
+        lda buf_table,x
+        sta buf_draw
+
+        ; Patch SMC locations
+        jsr patch_screen_base
+        rts
+
+; ----------------------------------------------------------------------------
+; patch_screen_base - Patch all SMC locations with current draw buffer
+; ----------------------------------------------------------------------------
+patch_screen_base
+        lda buf_draw
+
+        ; Patch drawing routines (4 locations) - labels point directly to byte
+        sta smc_screen_hi_1
+        sta smc_screen_hi_2
+        sta smc_screen_hi_3
+        sta smc_screen_hi_4
+
+        ; Patch clear_screen (4 high bytes) - labels point directly to byte
+        sta smc_clear_1
+        clc
+        adc #1
+        sta smc_clear_2
+        adc #1
+        sta smc_clear_3
+        adc #1
+        sta smc_clear_4
+
+        rts
 
 ; ============================================================================
 ; tic - Start raster-based timing
@@ -378,108 +588,298 @@ toc_raster_lo   .byte 0         ; Raster low byte
 ; draw_demo_cube - Draw the test cube
 ; ============================================================================
 draw_demo_cube
-        ; Triangle 1: C, p100, p110 = (40,25), (56,34), (40,43) color 1
+        ; Boundary test cube: x: 0-80, y: 0-50
+        ; Triangle 1: C, p100, p110 = (40,25), (80,37), (40,50) color 1
         lda #40
         sta zp_ax
         lda #25
         sta zp_ay
-        lda #56
+        lda #80
         sta zp_bx
-        lda #34
+        lda #37
         sta zp_by
         lda #40
         sta zp_cx
-        lda #43
+        lda #50
         sta zp_cy
         lda #1
         sta zp_color
         jsr draw_triangle
 
-        ; Triangle 2: C, p110, p010 = (40,25), (40,43), (24,34) color 1
+        ; Triangle 2: C, p110, p010 = (40,25), (40,50), (0,37) color 1
         lda #40
         sta zp_ax
         lda #25
         sta zp_ay
         lda #40
         sta zp_bx
-        lda #43
+        lda #50
         sta zp_by
-        lda #24
+        lda #0
         sta zp_cx
-        lda #34
+        lda #37
         sta zp_cy
         lda #1
         sta zp_color
         jsr draw_triangle
 
-        ; Triangle 3: C, p001, p101 = (40,25), (40,7), (56,16) color 2
+        ; Triangle 3: C, p001, p101 = (40,25), (40,0), (80,13) color 2
         lda #40
         sta zp_ax
         lda #25
         sta zp_ay
         lda #40
         sta zp_bx
-        lda #7
+        lda #0
         sta zp_by
-        lda #56
+        lda #80
         sta zp_cx
-        lda #16
+        lda #13
         sta zp_cy
         lda #2
         sta zp_color
         jsr draw_triangle
 
-        ; Triangle 4: C, p101, p100 = (40,25), (56,16), (56,34) color 2
+        ; Triangle 4: C, p101, p100 = (40,25), (80,13), (80,37) color 2
         lda #40
         sta zp_ax
         lda #25
         sta zp_ay
-        lda #56
+        lda #80
         sta zp_bx
-        lda #16
+        lda #13
         sta zp_by
-        lda #56
+        lda #80
         sta zp_cx
-        lda #34
+        lda #37
         sta zp_cy
         lda #2
         sta zp_color
         jsr draw_triangle
 
-        ; Triangle 5: C, p010, p011 = (40,25), (24,34), (24,16) color 3
+        ; Triangle 5: C, p010, p011 = (40,25), (0,37), (0,13) color 3
         lda #40
         sta zp_ax
         lda #25
         sta zp_ay
-        lda #24
+        lda #0
         sta zp_bx
-        lda #34
+        lda #37
         sta zp_by
-        lda #24
+        lda #0
         sta zp_cx
-        lda #16
+        lda #13
         sta zp_cy
         lda #3
         sta zp_color
         jsr draw_triangle
 
-        ; Triangle 6: C, p011, p001 = (40,25), (24,16), (40,7) color 3
+        ; Triangle 6: C, p011, p001 = (40,25), (0,13), (40,0) color 3
         lda #40
         sta zp_ax
         lda #25
         sta zp_ay
-        lda #24
+        lda #0
         sta zp_bx
-        lda #16
+        lda #13
         sta zp_by
         lda #40
         sta zp_cx
-        lda #7
+        lda #0
         sta zp_cy
         lda #3
         sta zp_color
         jsr draw_triangle
 
+        rts
+
+; ============================================================================
+; init_octahedron - Initialize octahedron mesh data
+; ============================================================================
+; Sets up the mesh_* variables with octahedron vertex and face data.
+; Same parameters as C test: vertices +-120, pz=1500, py=-25, theta=20
+init_octahedron
+        ; ----------------------------------------------------------------
+        ; Octahedron vertices: 6 points rotated 30° in XY plane
+        ; cos(30)=0.866, sin(30)=0.5
+        ; 0: was +X (120,0,0) -> (104, 60, 0)
+        ; 1: was -X (-120,0,0) -> (-104, -60, 0)
+        ; 2: was +Y (0,120,0) -> (-60, 104, 0)
+        ; 3: was -Y (0,-120,0) -> (60, -104, 0)
+        ; 4: +Z (0, 0, 120) unchanged
+        ; 5: -Z (0, 0, -120) unchanged
+        ; ----------------------------------------------------------------
+        lda #6
+        sta mesh_num_verts
+
+        ; Vertex 0: was +X -> (104, 60, 0)
+        lda #104
+        sta mesh_vx+0
+        lda #60
+        sta mesh_vy+0
+        lda #0
+        sta mesh_vz+0
+
+        ; Vertex 1: was -X -> (-104, -60, 0)
+        lda #<(-104)
+        sta mesh_vx+1
+        lda #<(-60)
+        sta mesh_vy+1
+        lda #0
+        sta mesh_vz+1
+
+        ; Vertex 2: was +Y -> (-60, 104, 0)
+        lda #<(-60)
+        sta mesh_vx+2
+        lda #104
+        sta mesh_vy+2
+        lda #0
+        sta mesh_vz+2
+
+        ; Vertex 3: was -Y -> (60, -104, 0)
+        lda #60
+        sta mesh_vx+3
+        lda #<(-104)
+        sta mesh_vy+3
+        lda #0
+        sta mesh_vz+3
+
+        ; Vertex 4: +Z (unchanged)
+        lda #0
+        sta mesh_vx+4
+        sta mesh_vy+4
+        lda #120
+        sta mesh_vz+4
+
+        ; Vertex 5: -Z (unchanged)
+        lda #0
+        sta mesh_vx+5
+        sta mesh_vy+5
+        lda #<(-120)
+        sta mesh_vz+5
+
+        ; ----------------------------------------------------------------
+        ; Octahedron faces: 8 triangles with CCW winding
+        ; Upper hemisphere (y < 0, appears as top on screen)
+        ; Lower hemisphere (y > 0, appears as bottom on screen)
+        ; ----------------------------------------------------------------
+        lda #8
+        sta mesh_num_faces
+
+        ; Face 0: i=0, j=4, k=3 (Upper: +X, +Z, -Y)
+        lda #0
+        sta mesh_fi+0
+        lda #4
+        sta mesh_fj+0
+        lda #3
+        sta mesh_fk+0
+        lda #1
+        sta mesh_fcol+0
+
+        ; Face 1: i=1, j=3, k=4 (Upper: -X, -Y, +Z)
+        lda #1
+        sta mesh_fi+1
+        lda #3
+        sta mesh_fj+1
+        lda #4
+        sta mesh_fk+1
+        lda #2
+        sta mesh_fcol+1
+
+        ; Face 2: i=0, j=3, k=5 (Upper: +X, -Y, -Z)
+        lda #0
+        sta mesh_fi+2
+        lda #3
+        sta mesh_fj+2
+        lda #5
+        sta mesh_fk+2
+        lda #3
+        sta mesh_fcol+2
+
+        ; Face 3: i=1, j=5, k=3 (Upper: -X, -Z, -Y)
+        lda #1
+        sta mesh_fi+3
+        lda #5
+        sta mesh_fj+3
+        lda #3
+        sta mesh_fk+3
+        lda #1
+        sta mesh_fcol+3
+
+        ; Face 4: i=0, j=2, k=4 (Lower: +X, +Y, +Z)
+        lda #0
+        sta mesh_fi+4
+        lda #2
+        sta mesh_fj+4
+        lda #4
+        sta mesh_fk+4
+        lda #2
+        sta mesh_fcol+4
+
+        ; Face 5: i=1, j=4, k=2 (Lower: -X, +Z, +Y)
+        lda #1
+        sta mesh_fi+5
+        lda #4
+        sta mesh_fj+5
+        lda #2
+        sta mesh_fk+5
+        lda #3
+        sta mesh_fcol+5
+
+        ; Face 6: i=0, j=5, k=2 (Lower: +X, -Z, +Y)
+        lda #0
+        sta mesh_fi+6
+        lda #5
+        sta mesh_fj+6
+        lda #2
+        sta mesh_fk+6
+        lda #1
+        sta mesh_fcol+6
+
+        ; Face 7: i=1, j=2, k=5 (Lower: -X, +Y, -Z)
+        lda #1
+        sta mesh_fi+7
+        lda #2
+        sta mesh_fj+7
+        lda #5
+        sta mesh_fk+7
+        lda #2
+        sta mesh_fcol+7
+
+        ; ----------------------------------------------------------------
+        ; Transform parameters: px=0, py=-25, pz=1500, theta=20
+        ; ----------------------------------------------------------------
+        lda #0
+        sta mesh_px_lo
+        sta mesh_px_hi
+
+        ; py = -25 (s16) = $FFE7
+        lda #<(-25)             ; $E7
+        sta mesh_py_lo
+        lda #>(-25)             ; $FF
+        sta mesh_py_hi
+
+        ; pz = 1500 (s16) = $05DC
+        lda #<1500              ; $DC
+        sta mesh_pz_lo
+        lda #>1500              ; $05
+        sta mesh_pz_hi
+
+        ; theta = 20
+        lda #20
+        sta mesh_theta
+
+        rts
+
+; ============================================================================
+; draw_octahedron - Transform and render the octahedron
+; ============================================================================
+draw_octahedron
+        jsr transform_mesh
+        cmp #0
+        bne _do_err             ; Transform failed
+        jsr render_mesh
+_do_err
         rts
 
 ; ============================================================================
@@ -578,9 +978,10 @@ cycle_count_lo  .byte 0
 cycle_count_hi  .byte 0
 
 ; ============================================================================
-; Include rasterizer
+; Include rasterizer and mesh rendering
 ; ============================================================================
         .include "rasterizer.asm"
+        .include "mesh.asm"
 
 ; ============================================================================
 ; VIC-II Setup
@@ -635,7 +1036,7 @@ compare_screen
         ldx #0
 _cmp_loop0
         lda $0400,x
-        cmp cube_expected,x
+        cmp octa_expected,x
         beq _cmp0_next
         inc $02
         bne _cmp0_rec
@@ -655,7 +1056,7 @@ _cmp0_next
         ldx #0
 _cmp_loop1
         lda $0400+250,x
-        cmp cube_expected+250,x
+        cmp octa_expected+250,x
         beq _cmp1_next
         inc $02
         bne _cmp1_rec
@@ -679,7 +1080,7 @@ _cmp1_next
         ldx #0
 _cmp_loop2
         lda $0400+500,x
-        cmp cube_expected+500,x
+        cmp octa_expected+500,x
         beq _cmp2_next
         inc $02
         bne _cmp2_rec
@@ -703,7 +1104,7 @@ _cmp2_next
         ldx #0
 _cmp_loop3
         lda $0400+750,x
-        cmp cube_expected+750,x
+        cmp octa_expected+750,x
         beq _cmp3_next
         inc $02
         bne _cmp3_rec
@@ -727,6 +1128,23 @@ _cmp3_next
         rts
 
 ; ============================================================================
-; Expected cube output
+; Expected octahedron output
 ; ============================================================================
-        .include "cube_expected.asm"
+        .include "octa_expected.asm"
+
+; ============================================================================
+; 3D MESH LOOKUP TABLES
+; ============================================================================
+
+; Rotation tables: cos(theta) * 127 and sin(theta) * 127 in s0.7 format
+; theta = 0..255 maps to 0..2*pi radians
+; Values range from -127 to +127
+rcos
+        .for i = 0, i < 256, i += 1
+            .char round(cos(i * 2 * 3.14159265358979 / 256) * 127)
+        .endfor
+
+rsin
+        .for i = 0, i < 256, i += 1
+            .char round(sin(i * 2 * 3.14159265358979 / 256) * 127)
+        .endfor
