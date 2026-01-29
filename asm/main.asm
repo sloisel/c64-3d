@@ -280,6 +280,10 @@ tic
         sta $d019
 
         cli                     ; Enable interrupts
+
+        ; Wait for first interrupt (counter goes from $FF to $00)
+-       lda tic_counter
+        bne -
         rts
 
 tic_irq_handler
