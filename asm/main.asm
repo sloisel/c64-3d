@@ -165,6 +165,7 @@ smult_eorx
 ; ----------------------------------------------------------------------------
 zp_mul_ptr0     = $fb   ; 2 bytes - pointer for multiplication tables
 zp_mul_ptr1     = $fd   ; 2 bytes - pointer for multiplication tables
+zp_anim_ptr     = $f9   ; 2 bytes - pointer for animation frame data
 prod_low        = $02   ; multiplication result low byte
 prod_high       = $03   ; multiplication result high byte
 div_result_lo   = $04   ; 8.8 result low byte (fractional part)
@@ -253,8 +254,8 @@ main
         ; Initialize triple buffering
         jsr triple_buf_init
 
-        ; Initialize octahedron mesh data
-        jsr init_octahedron
+        ; Initialize grunt mesh data
+        jsr init_grunt
 
         ; Animation loop
 _anim_loop
@@ -278,11 +279,14 @@ _anim_loop
         ; Advance to next draw buffer (0 -> 1 -> 2 -> 0)
         jsr advance_draw_buffer
 
-        ; Increment theta by 2 (slower rotation)
+        ; Increment theta by 10 (faster rotation)
         lda mesh_theta
         clc
-        adc #2
+        adc #10
         sta mesh_theta
+
+        ; Advance animation frame
+        jsr advance_grunt_frame
 
         jmp _anim_loop
 
@@ -760,91 +764,97 @@ init_octahedron
 
         ; ----------------------------------------------------------------
         ; Octahedron faces: 8 triangles with CCW winding
-        ; Upper hemisphere (y < 0, appears as top on screen)
-        ; Lower hemisphere (y > 0, appears as bottom on screen)
+        ; Split into two sub-meshes (4 faces each) for dual-mesh sorting
+        ; Sub-mesh 0: faces 0-3 (upper hemisphere)
+        ; Sub-mesh 1: faces 4-7 (lower hemisphere)
         ; ----------------------------------------------------------------
-        lda #8
-        sta mesh_num_faces
+        lda #4
+        sta mesh_num_faces_0
+        sta mesh_num_faces_1
+
+        ; === Sub-mesh 0: Upper hemisphere ===
 
         ; Face 0: i=0, j=4, k=3 (Upper: +X, +Z, -Y)
         lda #0
-        sta mesh_fi+0
+        sta mesh_fi_0+0
         lda #4
-        sta mesh_fj+0
+        sta mesh_fj_0+0
         lda #3
-        sta mesh_fk+0
+        sta mesh_fk_0+0
         lda #1
-        sta mesh_fcol+0
+        sta mesh_fcol_0+0
 
         ; Face 1: i=1, j=3, k=4 (Upper: -X, -Y, +Z)
         lda #1
-        sta mesh_fi+1
+        sta mesh_fi_0+1
         lda #3
-        sta mesh_fj+1
+        sta mesh_fj_0+1
         lda #4
-        sta mesh_fk+1
+        sta mesh_fk_0+1
         lda #2
-        sta mesh_fcol+1
+        sta mesh_fcol_0+1
 
         ; Face 2: i=0, j=3, k=5 (Upper: +X, -Y, -Z)
         lda #0
-        sta mesh_fi+2
+        sta mesh_fi_0+2
         lda #3
-        sta mesh_fj+2
+        sta mesh_fj_0+2
         lda #5
-        sta mesh_fk+2
+        sta mesh_fk_0+2
         lda #3
-        sta mesh_fcol+2
+        sta mesh_fcol_0+2
 
         ; Face 3: i=1, j=5, k=3 (Upper: -X, -Z, -Y)
         lda #1
-        sta mesh_fi+3
+        sta mesh_fi_0+3
         lda #5
-        sta mesh_fj+3
+        sta mesh_fj_0+3
         lda #3
-        sta mesh_fk+3
+        sta mesh_fk_0+3
         lda #1
-        sta mesh_fcol+3
+        sta mesh_fcol_0+3
+
+        ; === Sub-mesh 1: Lower hemisphere ===
 
         ; Face 4: i=0, j=2, k=4 (Lower: +X, +Y, +Z)
         lda #0
-        sta mesh_fi+4
+        sta mesh_fi_1+0
         lda #2
-        sta mesh_fj+4
+        sta mesh_fj_1+0
         lda #4
-        sta mesh_fk+4
+        sta mesh_fk_1+0
         lda #2
-        sta mesh_fcol+4
+        sta mesh_fcol_1+0
 
         ; Face 5: i=1, j=4, k=2 (Lower: -X, +Z, +Y)
         lda #1
-        sta mesh_fi+5
+        sta mesh_fi_1+1
         lda #4
-        sta mesh_fj+5
+        sta mesh_fj_1+1
         lda #2
-        sta mesh_fk+5
+        sta mesh_fk_1+1
         lda #3
-        sta mesh_fcol+5
+        sta mesh_fcol_1+1
 
         ; Face 6: i=0, j=5, k=2 (Lower: +X, -Z, +Y)
         lda #0
-        sta mesh_fi+6
+        sta mesh_fi_1+2
         lda #5
-        sta mesh_fj+6
+        sta mesh_fj_1+2
         lda #2
-        sta mesh_fk+6
+        sta mesh_fk_1+2
         lda #1
-        sta mesh_fcol+6
+        sta mesh_fcol_1+2
 
         ; Face 7: i=1, j=2, k=5 (Lower: -X, +Y, -Z)
         lda #1
-        sta mesh_fi+7
+        sta mesh_fi_1+3
         lda #2
-        sta mesh_fj+7
+        sta mesh_fj_1+3
         lda #5
-        sta mesh_fk+7
+        sta mesh_fk_1+3
         lda #2
-        sta mesh_fcol+7
+        sta mesh_fcol_1+3
 
         ; ----------------------------------------------------------------
         ; Transform parameters: px=0, py=-25, pz=1500, theta=20
@@ -1131,6 +1141,150 @@ _cmp3_next
 ; Expected octahedron output
 ; ============================================================================
         .include "octa_expected.asm"
+
+; ============================================================================
+; Grunt mesh data (151 vertices, 295 faces split 147+148, 16 animation frames)
+; ============================================================================
+        .include "grunt_anim.asm"
+
+grunt_frame .byte 0     ; Current animation frame (0-15)
+
+; ============================================================================
+; init_grunt - Initialize grunt mesh data using loops
+; ============================================================================
+init_grunt
+        ; Start at frame 0
+        lda #0
+        sta grunt_frame
+
+        ; Load first frame vertices
+        jsr load_grunt_frame
+
+        lda #GRUNT_NUM_VERTICES
+        sta mesh_num_verts
+
+        ; Copy sub-mesh 0 faces (147 faces)
+        ldx #0
+_ig_faces0
+        lda grunt_fi_0,x
+        sta mesh_fi_0,x
+        lda grunt_fj_0,x
+        sta mesh_fj_0,x
+        lda grunt_fk_0,x
+        sta mesh_fk_0,x
+        lda grunt_fcol_0,x
+        sta mesh_fcol_0,x
+        inx
+        cpx #GRUNT_NUM_FACES_0
+        bne _ig_faces0
+
+        lda #GRUNT_NUM_FACES_0
+        sta mesh_num_faces_0
+
+        ; Copy sub-mesh 1 faces (148 faces)
+        ldx #0
+_ig_faces1
+        lda grunt_fi_1,x
+        sta mesh_fi_1,x
+        lda grunt_fj_1,x
+        sta mesh_fj_1,x
+        lda grunt_fk_1,x
+        sta mesh_fk_1,x
+        lda grunt_fcol_1,x
+        sta mesh_fcol_1,x
+        inx
+        cpx #GRUNT_NUM_FACES_1
+        bne _ig_faces1
+
+        lda #GRUNT_NUM_FACES_1
+        sta mesh_num_faces_1
+
+        ; Transform parameters: px=0, py=0, pz=1500, theta=20
+        lda #0
+        sta mesh_px_lo
+        sta mesh_px_hi
+        sta mesh_py_lo
+        sta mesh_py_hi
+
+        ; pz = 1500 (s16) = $05DC
+        lda #<1500
+        sta mesh_pz_lo
+        lda #>1500
+        sta mesh_pz_hi
+
+        ; theta = 20
+        lda #20
+        sta mesh_theta
+
+        rts
+
+; ============================================================================
+; load_grunt_frame - Load vertex data for current animation frame
+; ============================================================================
+; Uses grunt_frame to index into pointer tables
+; Copies 151 vertices from frame data to mesh_vx/vy/vz
+load_grunt_frame
+        ; Set up source pointers based on grunt_frame
+        ldx grunt_frame
+
+        ; X axis pointer -> zp_anim_ptr
+        lda grunt_vx_lo,x
+        sta zp_anim_ptr
+        lda grunt_vx_hi,x
+        sta zp_anim_ptr+1
+
+        ; Copy X coordinates
+        ldy #0
+_lgf_x  lda (zp_anim_ptr),y
+        sta mesh_vx,y
+        iny
+        cpy #GRUNT_NUM_VERTICES
+        bne _lgf_x
+
+        ; Y axis pointer -> zp_anim_ptr
+        ldx grunt_frame
+        lda grunt_vy_lo,x
+        sta zp_anim_ptr
+        lda grunt_vy_hi,x
+        sta zp_anim_ptr+1
+
+        ; Copy Y coordinates
+        ldy #0
+_lgf_y  lda (zp_anim_ptr),y
+        sta mesh_vy,y
+        iny
+        cpy #GRUNT_NUM_VERTICES
+        bne _lgf_y
+
+        ; Z axis pointer -> zp_anim_ptr
+        ldx grunt_frame
+        lda grunt_vz_lo,x
+        sta zp_anim_ptr
+        lda grunt_vz_hi,x
+        sta zp_anim_ptr+1
+
+        ; Copy Z coordinates
+        ldy #0
+_lgf_z  lda (zp_anim_ptr),y
+        sta mesh_vz,y
+        iny
+        cpy #GRUNT_NUM_VERTICES
+        bne _lgf_z
+
+        rts
+
+; ============================================================================
+; advance_grunt_frame - Move to next animation frame
+; ============================================================================
+advance_grunt_frame
+        inc grunt_frame
+        lda grunt_frame
+        cmp #GRUNT_NUM_FRAMES
+        bcc _agf_ok
+        lda #0
+        sta grunt_frame
+_agf_ok
+        jmp load_grunt_frame    ; Tail call
 
 ; ============================================================================
 ; 3D MESH LOOKUP TABLES

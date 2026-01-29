@@ -45,31 +45,45 @@ zp_mul16_hi     = $45   ; 16-bit signed value for multiply (high)
 
 ; Maximum mesh size
 MESH_MAX_VERTICES = 256
-MESH_MAX_FACES    = 256
+MESH_MAX_FACES    = 256         ; Per sub-mesh (total 512 faces possible)
 
-; Mesh vertex data (s8 local coordinates)
+; Mesh vertex data (s8 local coordinates) - shared by both sub-meshes
 mesh_vx         .fill MESH_MAX_VERTICES, 0
 mesh_vy         .fill MESH_MAX_VERTICES, 0
 mesh_vz         .fill MESH_MAX_VERTICES, 0
 
-; Mesh face data (u8 vertex indices and colors)
-mesh_fi         .fill MESH_MAX_FACES, 0
-mesh_fj         .fill MESH_MAX_FACES, 0
-mesh_fk         .fill MESH_MAX_FACES, 0
-mesh_fcol       .fill MESH_MAX_FACES, 0
+; Sub-mesh 0 face data (faces 0-255)
+mesh_fi_0       .fill MESH_MAX_FACES, 0
+mesh_fj_0       .fill MESH_MAX_FACES, 0
+mesh_fk_0       .fill MESH_MAX_FACES, 0
+mesh_fcol_0     .fill MESH_MAX_FACES, 0
+
+; Sub-mesh 1 face data (faces 256-511)
+mesh_fi_1       .fill MESH_MAX_FACES, 0
+mesh_fj_1       .fill MESH_MAX_FACES, 0
+mesh_fk_1       .fill MESH_MAX_FACES, 0
+mesh_fcol_1     .fill MESH_MAX_FACES, 0
 
 ; Mesh properties
 mesh_num_verts  .byte 0
-mesh_num_faces  .byte 0
+mesh_num_faces_0 .byte 0        ; Number of faces in sub-mesh 0
+mesh_num_faces_1 .byte 0        ; Number of faces in sub-mesh 1
 
 ; Rotated Z per vertex (s8, for painter's algorithm sorting)
 mesh_rot_z      .fill MESH_MAX_VERTICES, 0
 
-; Face render order (sorted back-to-front by radix sort)
-face_order      .fill MESH_MAX_FACES, 0
+; Face render order for each sub-mesh (sorted back-to-front by radix sort)
+face_order_0    .fill MESH_MAX_FACES, 0
+face_order_1    .fill MESH_MAX_FACES, 0
 
-; Radix sort count array (temporary)
+; Radix sort count array (temporary, shared between sorts)
 radix_count     .fill 256, 0
+
+; Radix sort temp variables (shared between sort_faces_0 and sort_faces_1)
+sf_position     .byte 0
+sf_face_idx     .byte 0
+sf_pos_temp     .byte 0
+
 mesh_px_lo      .byte 0    ; 16-bit signed world position X
 mesh_px_hi      .byte 0
 mesh_py_lo      .byte 0    ; 16-bit signed world position Y
@@ -554,118 +568,207 @@ _m16_byte0      .byte 0
 _m16_byte1      .byte 0
 
 ; ============================================================================
-; ROUTINE: sort_faces
+; ROUTINE: sort_faces_0
 ; ============================================================================
-; Sort faces back-to-front using radix sort on rot_z of first vertex.
-;
-; Uses XOR $80 to convert signed rot_z to unsigned for sorting.
-; Processes count array from high to low for back-to-front order.
-;
-; Input: mesh_num_faces, mesh_fi[], mesh_rot_z[]
-; Output: face_order[] contains sorted face indices
-;
-; Destroys: A, X, Y
+; Sort sub-mesh 0 faces back-to-front using radix sort on rot_z of first vertex.
 ; ============================================================================
 
-sort_faces
-        ; --- Phase 1: Clear count array ---
+sort_faces_0
+        ; --- Phase 1: Clear count array (8x unrolled with stride) ---
         lda #0
-        ldx #0
-_sf_clear
+        ldx #31
+_sf0_clear
         sta radix_count,x
-        inx
-        bne _sf_clear
+        sta radix_count+32,x
+        sta radix_count+64,x
+        sta radix_count+96,x
+        sta radix_count+128,x
+        sta radix_count+160,x
+        sta radix_count+192,x
+        sta radix_count+224,x
+        dex
+        bpl _sf0_clear
 
         ; --- Phase 2: Count occurrences ---
-        ; For each face, increment count[rot_z[fi[face]] XOR $80]
         ldx #0
-_sf_count_loop
-        cpx mesh_num_faces
-        beq _sf_count_done
-
-        ; Get first vertex of face
-        lda mesh_fi,x
+_sf0_count_loop
+        cpx mesh_num_faces_0
+        beq _sf0_count_done
+        lda mesh_fi_0,x
         tay
-        ; Get rot_z of that vertex, XOR $80 for unsigned sort key
         lda mesh_rot_z,y
         eor #$80
         tay
-        ; Increment count (no inc abs,y on 6502, so load/inc/store)
         lda radix_count,y
         clc
         adc #1
         sta radix_count,y
-
         inx
-        jmp _sf_count_loop
-_sf_count_done
+        jmp _sf0_count_loop
+_sf0_count_done
 
-        ; --- Phase 3: Convert counts to ending positions (backwards for back-to-front) ---
-        ; We want largest Z first, so we build positions from the end backwards.
-        ; Start with position = num_faces, process from index 255 down to 0.
-        ; After each count, position -= count; that position becomes the start for that bucket.
-
-        lda mesh_num_faces
-        sta _sf_position
-
+        ; --- Phase 3: Prefix sum (backwards, 4x unrolled) ---
+        lda mesh_num_faces_0
+        sta sf_position
         ldx #255
-_sf_prefix_loop
-        lda _sf_position
+_sf0_prefix_loop
+        lda sf_position
         sec
         sbc radix_count,x
-        sta _sf_position
-        sta radix_count,x       ; count[x] now holds starting position for bucket x
-
+        sta sf_position
+        sta radix_count,x
+        dex
+        lda sf_position
+        sec
+        sbc radix_count,x
+        sta sf_position
+        sta radix_count,x
+        dex
+        lda sf_position
+        sec
+        sbc radix_count,x
+        sta sf_position
+        sta radix_count,x
+        dex
+        lda sf_position
+        sec
+        sbc radix_count,x
+        sta sf_position
+        sta radix_count,x
         dex
         cpx #$ff
-        bne _sf_prefix_loop
+        bne _sf0_prefix_loop
 
-        ; --- Phase 4: Scatter faces into face_order ---
-        ; For each face, place at count[key]++
+        ; --- Phase 4: Scatter ---
         ldx #0
-_sf_scatter_loop
-        cpx mesh_num_faces
-        beq _sf_scatter_done
-        stx _sf_face_idx
-
-        ; Get sort key for this face
-        lda mesh_fi,x
+_sf0_scatter_loop
+        cpx mesh_num_faces_0
+        beq _sf0_scatter_done
+        stx sf_face_idx
+        lda mesh_fi_0,x
         tay
         lda mesh_rot_z,y
         eor #$80
-        tay                     ; Y = sort key
-
-        ; Get position and increment it
+        tay
         lda radix_count,y
-        sta _sf_pos_temp
+        sta sf_pos_temp
         clc
         adc #1
         sta radix_count,y
-
-        ; Store face index at that position
-        ldx _sf_pos_temp        ; X = position (before increment)
-        lda _sf_face_idx
-        sta face_order,x
-
-        ldx _sf_face_idx
+        ldx sf_pos_temp
+        lda sf_face_idx
+        sta face_order_0,x
+        ldx sf_face_idx
         inx
-        jmp _sf_scatter_loop
-_sf_scatter_done
+        jmp _sf0_scatter_loop
+_sf0_scatter_done
         rts
 
-_sf_position    .byte 0
-_sf_face_idx    .byte 0
-_sf_pos_temp    .byte 0
+; ============================================================================
+; ROUTINE: sort_faces_1
+; ============================================================================
+; Sort sub-mesh 1 faces back-to-front using radix sort on rot_z of first vertex.
+; ============================================================================
+
+sort_faces_1
+        ; --- Phase 1: Clear count array (8x unrolled with stride) ---
+        lda #0
+        ldx #31
+_sf1_clear
+        sta radix_count,x
+        sta radix_count+32,x
+        sta radix_count+64,x
+        sta radix_count+96,x
+        sta radix_count+128,x
+        sta radix_count+160,x
+        sta radix_count+192,x
+        sta radix_count+224,x
+        dex
+        bpl _sf1_clear
+
+        ; --- Phase 2: Count occurrences ---
+        ldx #0
+_sf1_count_loop
+        cpx mesh_num_faces_1
+        beq _sf1_count_done
+        lda mesh_fi_1,x
+        tay
+        lda mesh_rot_z,y
+        eor #$80
+        tay
+        lda radix_count,y
+        clc
+        adc #1
+        sta radix_count,y
+        inx
+        jmp _sf1_count_loop
+_sf1_count_done
+
+        ; --- Phase 3: Prefix sum (backwards, 4x unrolled) ---
+        lda mesh_num_faces_1
+        sta sf_position
+        ldx #255
+_sf1_prefix_loop
+        lda sf_position
+        sec
+        sbc radix_count,x
+        sta sf_position
+        sta radix_count,x
+        dex
+        lda sf_position
+        sec
+        sbc radix_count,x
+        sta sf_position
+        sta radix_count,x
+        dex
+        lda sf_position
+        sec
+        sbc radix_count,x
+        sta sf_position
+        sta radix_count,x
+        dex
+        lda sf_position
+        sec
+        sbc radix_count,x
+        sta sf_position
+        sta radix_count,x
+        dex
+        cpx #$ff
+        bne _sf1_prefix_loop
+
+        ; --- Phase 4: Scatter ---
+        ldx #0
+_sf1_scatter_loop
+        cpx mesh_num_faces_1
+        beq _sf1_scatter_done
+        stx sf_face_idx
+        lda mesh_fi_1,x
+        tay
+        lda mesh_rot_z,y
+        eor #$80
+        tay
+        lda radix_count,y
+        sta sf_pos_temp
+        clc
+        adc #1
+        sta radix_count,y
+        ldx sf_pos_temp
+        lda sf_face_idx
+        sta face_order_1,x
+        ldx sf_face_idx
+        inx
+        jmp _sf1_scatter_loop
+_sf1_scatter_done
+        rts
 
 ; ============================================================================
 ; ROUTINE: render_mesh
 ; ============================================================================
-; Render all faces of the mesh using transformed screen coordinates.
-; Faces are rendered in face_order[] order (call sort_faces first for painter's).
+; Render all faces from both sub-meshes using merge-sort style traversal.
+; Faces are rendered back-to-front (largest rot_z first).
 ;
 ; Input: screen_x[], screen_y[] must be valid (from transform_mesh)
-;        face_order[] should be sorted (from sort_faces)
-;        Mesh face data in mesh_fi, mesh_fj, mesh_fk, mesh_fcol
+;        Both sub-meshes must have face data set up
 ;
 ; Output: Triangles drawn to screen
 ;
@@ -673,59 +776,155 @@ _sf_pos_temp    .byte 0
 ; ============================================================================
 
 render_mesh
-        ; First sort faces for painter's algorithm
-        jsr sort_faces
+        ; Sort both sub-meshes
+        jsr sort_faces_0
+        jsr sort_faces_1
 
+        ; Initialize merge indices
         lda #0
-        sta zp_face_idx
+        sta _rm_idx_0
+        sta _rm_idx_1
 
-_rm_face_loop
-        ; Check if done
-        lda zp_face_idx
-        cmp mesh_num_faces
-        bcc _rm_do_face
+_rm_merge_loop
+        ; Check if sub-mesh 0 exhausted
+        lda _rm_idx_0
+        cmp mesh_num_faces_0
+        bcs _rm_only_1
+
+        ; Check if sub-mesh 1 exhausted
+        lda _rm_idx_1
+        cmp mesh_num_faces_1
+        bcs _rm_only_0
+
+        ; Both have faces - compare rot_z (want larger z first = back-to-front)
+        ; Get rot_z for current face in sub-mesh 0
+        ldx _rm_idx_0
+        lda face_order_0,x
+        tax
+        lda mesh_fi_0,x
+        tay
+        lda mesh_rot_z,y
+        sta _rm_z0
+
+        ; Get rot_z for current face in sub-mesh 1
+        ldx _rm_idx_1
+        lda face_order_1,x
+        tax
+        lda mesh_fi_1,x
+        tay
+        lda mesh_rot_z,y
+
+        ; Compare: signed comparison (z1 vs z0)
+        ; We want larger Z first, so if z0 >= z1, render mesh 0
+        sec
+        sbc _rm_z0              ; A = z1 - z0
+        bvc _rm_no_overflow
+        eor #$80                ; Fix sign on overflow
+_rm_no_overflow
+        bmi _rm_render_1        ; z1 < z0, render mesh 1... wait, backwards
+        ; Actually: if (z1 - z0) < 0, then z1 < z0, so z0 is larger, render mesh 0
+        ; if (z1 - z0) >= 0, then z1 >= z0, render mesh 1
+        bpl _rm_render_1        ; z1 >= z0, render from mesh 1 first
+
+_rm_render_0
+        ; Render face from sub-mesh 0
+        ldx _rm_idx_0
+        lda face_order_0,x
+        jsr _rm_draw_face_0
+        inc _rm_idx_0
+        jmp _rm_merge_loop
+
+_rm_render_1
+        ; Render face from sub-mesh 1
+        ldx _rm_idx_1
+        lda face_order_1,x
+        jsr _rm_draw_face_1
+        inc _rm_idx_1
+        jmp _rm_merge_loop
+
+_rm_only_0
+        ; Render remaining faces from sub-mesh 0
+        lda _rm_idx_0
+        cmp mesh_num_faces_0
+        bcs _rm_done
+        ldx _rm_idx_0
+        lda face_order_0,x
+        jsr _rm_draw_face_0
+        inc _rm_idx_0
+        jmp _rm_only_0
+
+_rm_only_1
+        ; Render remaining faces from sub-mesh 1
+        lda _rm_idx_1
+        cmp mesh_num_faces_1
+        bcs _rm_done
+        ldx _rm_idx_1
+        lda face_order_1,x
+        jsr _rm_draw_face_1
+        inc _rm_idx_1
+        jmp _rm_only_1
+
+_rm_done
         rts
 
-_rm_do_face
-        ; Get actual face index from sorted order
-        ldx zp_face_idx
-        lda face_order,x
-        sta _rm_actual_face
-
-        ; Get vertex indices
+; Helper: draw face from sub-mesh 0
+; Input: A = face index in sub-mesh 0
+_rm_draw_face_0
         tax
-        lda mesh_fi,x
+        lda mesh_fi_0,x
         tay
         lda screen_x,y
         sta zp_ax
         lda screen_y,y
         sta zp_ay
 
-        ldx _rm_actual_face
-        lda mesh_fj,x
+        lda mesh_fj_0,x
         tay
         lda screen_x,y
         sta zp_bx
         lda screen_y,y
         sta zp_by
 
-        ldx _rm_actual_face
-        lda mesh_fk,x
+        lda mesh_fk_0,x
         tay
         lda screen_x,y
         sta zp_cx
         lda screen_y,y
         sta zp_cy
 
-        ldx _rm_actual_face
-        lda mesh_fcol,x
+        lda mesh_fcol_0,x
         sta zp_color
+        jmp draw_triangle       ; tail call
 
-        ; Draw triangle (handles backface culling internally)
-        jsr draw_triangle
+; Helper: draw face from sub-mesh 1
+; Input: A = face index in sub-mesh 1
+_rm_draw_face_1
+        tax
+        lda mesh_fi_1,x
+        tay
+        lda screen_x,y
+        sta zp_ax
+        lda screen_y,y
+        sta zp_ay
 
-        ; Next face
-        inc zp_face_idx
-        jmp _rm_face_loop
+        lda mesh_fj_1,x
+        tay
+        lda screen_x,y
+        sta zp_bx
+        lda screen_y,y
+        sta zp_by
 
-_rm_actual_face .byte 0
+        lda mesh_fk_1,x
+        tay
+        lda screen_x,y
+        sta zp_cx
+        lda screen_y,y
+        sta zp_cy
+
+        lda mesh_fcol_1,x
+        sta zp_color
+        jmp draw_triangle       ; tail call
+
+_rm_idx_0       .byte 0
+_rm_idx_1       .byte 0
+_rm_z0          .byte 0

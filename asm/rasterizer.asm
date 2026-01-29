@@ -190,6 +190,13 @@ _no_cull
         sta zp_dx_ac_lo
         sty zp_dx_ac_hi
 
+        ; Precompute dx_ac * 2 for dual-row advancement
+        asl a                   ; A still has dx_ac_lo
+        sta zp_dx_ac2_lo
+        tya                     ; Y has dx_ac_hi
+        rol a
+        sta zp_dx_ac2_hi
+
         ; ----------------------------------------------------------------
         ; Step 6: Initialize x_long with half-pixel offset
         ; x_long = (ax << 8) + (dx_ac >> 1)
@@ -252,6 +259,13 @@ _no_cull
         sta zp_dx_short_lo
         sty zp_dx_short_hi
 
+        ; Precompute dx_short * 2 for dual-row advancement
+        asl a                   ; A still has dx_short_lo
+        sta zp_dx_short2_lo
+        tya                     ; Y has dx_short_hi
+        rol a
+        sta zp_dx_short2_hi
+
         ; Initialize x_short = (ax << 8) + (dx_ab >> 1)
         lda #0
         sta zp_x_short_lo
@@ -308,6 +322,13 @@ _skip_top_trap
 
         sta zp_dx_short_lo
         sty zp_dx_short_hi
+
+        ; Precompute dx_short * 2 for dual-row advancement
+        asl a                   ; A still has dx_short_lo
+        sta zp_dx_short2_lo
+        tya                     ; Y has dx_short_hi
+        rol a
+        sta zp_dx_short2_hi
 
         ; Initialize x_short = (bx << 8) + (dx_bc >> 1)
         ; NOTE: x_long continues from where top trapezoid left off
@@ -415,13 +436,11 @@ _got_endpoints
 _no_swap_xl
         ; Check if we can do dual-row optimization
         lda zp_y
+        tax                     ; Save original Y in X
         and #1
-        beq _check_dual_row     ; Even y: check if we can do dual row
-        jmp _odd_scanline       ; Odd y: single span
-
-_check_dual_row
-        ; Even y: check if next scanline is within trapezoid
-        lda zp_y
+        bne _odd_scanline       ; Odd y: single span
+        ; Even y: check if next scanline is within trapezoid (X still has zp_y)
+        txa
         clc
         adc #1
         cmp zp_y_end
@@ -482,37 +501,23 @@ _got_endpoints2
         ; Draw dual row using interval-based blitter
         jsr draw_dual_row_intervals
 
-        ; Advance edges by 2 * slope
+        ; Advance edges by 2 * slope (using precomputed dx*2)
         ; x_long += dx_ac * 2
         clc
         lda zp_x_long_lo
-        adc zp_dx_ac_lo
+        adc zp_dx_ac2_lo
         sta zp_x_long_lo
         lda zp_x_long_hi
-        adc zp_dx_ac_hi
-        sta zp_x_long_hi
-        clc
-        lda zp_x_long_lo
-        adc zp_dx_ac_lo
-        sta zp_x_long_lo
-        lda zp_x_long_hi
-        adc zp_dx_ac_hi
+        adc zp_dx_ac2_hi
         sta zp_x_long_hi
 
         ; x_short += dx_short * 2
         clc
         lda zp_x_short_lo
-        adc zp_dx_short_lo
+        adc zp_dx_short2_lo
         sta zp_x_short_lo
         lda zp_x_short_hi
-        adc zp_dx_short_hi
-        sta zp_x_short_hi
-        clc
-        lda zp_x_short_lo
-        adc zp_dx_short_lo
-        sta zp_x_short_lo
-        lda zp_x_short_hi
-        adc zp_dx_short_hi
+        adc zp_dx_short2_hi
         sta zp_x_short_hi
 
         ; Advance y by 2
@@ -583,6 +588,7 @@ _dst_start
         sta zp_screen_lo
         lda row_offset_hi,x
         clc
+smc_screen_hi_1 = * + 1         ; SMC: patch this byte
         adc #>SCREEN_RAM
         sta zp_screen_hi
 
@@ -688,6 +694,7 @@ _dsb_start
         sta zp_screen_lo
         lda row_offset_hi,x
         clc
+smc_screen_hi_2 = * + 1         ; SMC: patch this byte
         adc #>SCREEN_RAM
         sta zp_screen_hi
 
@@ -793,6 +800,7 @@ _drs_start
         sta zp_screen_lo
         lda row_offset_hi,x
         clc
+smc_screen_hi_3 = * + 1         ; SMC: patch this byte
         adc #>SCREEN_RAM
         sta zp_screen_hi
 
@@ -1210,6 +1218,7 @@ set_pixel_v2
         adc _sp2_char_x
         sta zp_screen_lo
         lda row_offset_hi,x
+smc_screen_hi_4 = * + 1         ; SMC: patch this byte
         adc #>SCREEN_RAM
         sta zp_screen_hi
 
@@ -1287,17 +1296,17 @@ _sp2_temp       .byte 0
 clear_screen
         tax
         lda color_pattern,x     ; Get replicated color byte
-        ldx #0
--       sta SCREEN_RAM,x
-        sta SCREEN_RAM+$100,x
-        sta SCREEN_RAM+$200,x
-        inx
-        bne -
-        ; Last 232 bytes
-        ldx #0
--       sta SCREEN_RAM+$300,x
-        inx
-        cpx #232
+        ldy #0
+        ; SMC: patch high bytes (opcode $99, then lo, then hi)
+smc_clear_1 = * + 2             ; High byte of first sta
+-       sta SCREEN_RAM,y
+smc_clear_2 = * + 2
+        sta SCREEN_RAM+$100,y
+smc_clear_3 = * + 2
+        sta SCREEN_RAM+$200,y
+smc_clear_4 = * + 2
+        sta SCREEN_RAM+$300,y   ; Writes 24 extra bytes past screen (harmless)
+        iny
         bne -
         rts
 

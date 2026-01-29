@@ -3,6 +3,8 @@
 #include <string.h>
 #include <time.h>
 #include "rasterize.h"
+#include "mesh.h"
+#include "grunt_mesh.h"
 
 /* Reference rasterizer using simple scanline algorithm with half-pixel sampling.
  * At scanline y, we sample at y + 0.5 to avoid vertex degeneracy.
@@ -239,6 +241,74 @@ int run_exhaustive_tests(int region_size) {
     return failures;
 }
 
+/* Demo: rotating octahedron using 3D mesh rendering */
+void run_cube_demo(void) {
+    unsigned char buf[SCREEN_SIZE];
+
+    init_mesh_tables();
+
+    /* Octahedron vertices: 6 points on axes (maximize 8-bit range) */
+    int8_t vx[] = { 120, -120,    0,    0,    0,    0 };  /* +X, -X */
+    int8_t vy[] = {   0,    0,  120, -120,    0,    0 };  /* +Y, -Y */
+    int8_t vz[] = {   0,    0,    0,    0,  120, -120 };  /* +Z, -Z */
+
+    /* Octahedron faces: 8 triangles with CCW winding viewed from outside
+     * Upper hemisphere (y < 0, appears as top on screen)
+     * Lower hemisphere (y > 0, appears as bottom on screen) */
+    uint8_t fi[] = { 0, 1, 0, 1,  0, 1, 0, 1 };
+    uint8_t fj[] = { 4, 3, 3, 5,  2, 4, 5, 2 };
+    uint8_t fk[] = { 3, 4, 5, 3,  4, 2, 2, 5 };
+
+    /* Face colors: alternate between colors 1, 2, 3 */
+    uint8_t fcol[] = { 1, 2, 3, 1,  2, 3, 1, 2 };
+
+    Mesh octa = {
+        .i = fi, .j = fj, .k = fk, .col = fcol,
+        .num_faces = 8,
+        .x = vx, .y = vy, .z = vz,
+        .num_vertices = 6,
+        .px = 0, .py = -25, .pz = 1500,
+        .theta = 20  /* Angle that shows 4 faces */
+    };
+
+    clear_screen(buf, 0);
+    render_mesh(buf, &octa);
+    save_screen(buf, "cube.bin");
+    printf("Octahedron demo saved to cube.bin\n");
+}
+
+/* Demo: render the Quake grunt model */
+void run_grunt_demo(void) {
+    unsigned char buf[SCREEN_SIZE];
+
+    /* Mesh data is already properly oriented by the converter:
+     * X = left/right, Y = up/down (screen coords), Z = depth */
+    Mesh grunt = {
+        .i = grunt_faces_i, .j = grunt_faces_j, .k = grunt_faces_k,
+        .col = NULL,
+        .num_faces = GRUNT_NUM_FACES,
+        .x = grunt_vertices_x, .y = grunt_vertices_y, .z = grunt_vertices_z,
+        .num_vertices = GRUNT_NUM_VERTICES,
+        .px = 0, .py = 0, .pz = 1500,
+        .theta = 20  /* Slight rotation to show some depth */
+    };
+
+    /* Allocate colors - alternate */
+    uint8_t *fcol = malloc(GRUNT_NUM_FACES);
+    for (int i = 0; i < GRUNT_NUM_FACES; i++) {
+        fcol[i] = 1 + (i % 3);
+    }
+    grunt.col = fcol;
+
+    clear_screen(buf, 0);
+    render_mesh(buf, &grunt);
+    save_screen(buf, "grunt.bin");
+    printf("Grunt demo saved to grunt.bin (%d vertices, %d faces)\n",
+           GRUNT_NUM_VERTICES, GRUNT_NUM_FACES);
+
+    free(fcol);
+}
+
 /* Demo: draw an isometric cube (6 triangles, 3 visible faces) */
 void run_demo(void) {
     unsigned char buf[SCREEN_SIZE];
@@ -248,14 +318,14 @@ void run_demo(void) {
      * Center C is the front corner of the cube.
      * 3 faces visible, 2 triangles each, all CCW winding. */
 
-    /* Vertex coordinates */
+    /* Vertex coordinates - boundary test cube (x: 0-80, y: 0-50) */
     int cx = 40, cy = 25;   /* C: front corner (center) */
-    int p100x = 56, p100y = 34;  /* bottom-right */
-    int p010x = 24, p010y = 34;  /* bottom-left */
-    int p001x = 40, p001y = 7;   /* top */
-    int p110x = 40, p110y = 43;  /* bottom */
-    int p101x = 56, p101y = 16;  /* top-right */
-    int p011x = 24, p011y = 16;  /* top-left */
+    int p100x = 80, p100y = 37;  /* bottom-right */
+    int p010x = 0, p010y = 37;   /* bottom-left */
+    int p001x = 40, p001y = 0;   /* top */
+    int p110x = 40, p110y = 50;  /* bottom */
+    int p101x = 80, p101y = 13;  /* top-right */
+    int p011x = 0, p011y = 13;   /* top-left */
 
     /* Bottom face (color 1) */
     draw_triangle(buf, cx, cy, p100x, p100y, p110x, p110y, 1);
@@ -278,6 +348,16 @@ int main(int argc, char **argv) {
 
     if (argc > 1 && strcmp(argv[1], "--demo") == 0) {
         run_demo();
+        return 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--cube") == 0) {
+        run_cube_demo();
+        return 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--grunt") == 0) {
+        run_grunt_demo();
         return 0;
     }
 
