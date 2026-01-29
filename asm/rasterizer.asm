@@ -388,6 +388,7 @@ _trap_continue
         beq _long_is_left
 
         ; b_on_left: short is left, long is right
+        ; [xl, xr) convention - xl inclusive, xr exclusive
         lda zp_x_short_hi
         sta zp_xl
         lda zp_x_long_hi
@@ -402,7 +403,7 @@ _long_is_left
         sta zp_xr
 
 _got_endpoints
-        ; Ensure xl <= xr (swap if needed)
+        ; Ensure xl < xr (swap if needed)
         lda zp_xl
         cmp zp_xr
         bcc _no_swap_xl
@@ -452,7 +453,7 @@ _do_dual_row
         adc zp_dx_short_hi
         sta zp_x_short2_hi
 
-        ; Get second row endpoints
+        ; Get second row endpoints [xl2, xr2)
         lda zp_b_on_left
         beq _long_is_left2
 
@@ -469,7 +470,7 @@ _long_is_left2
         sta zp_xr2
 
 _got_endpoints2
-        ; Ensure xl2 <= xr2
+        ; Ensure xl2 < xr2 (swap if needed)
         lda zp_xl2
         cmp zp_xr2
         bcc +
@@ -523,11 +524,11 @@ _got_endpoints2
 
 _single_even_row
         ; Even y but no second row available
-        ; Use draw_dual_row with empty second row (xl2 > xr2)
-        lda #1
+        ; Use draw_dual_row with empty second row (xl2 == xr2 == xl)
+        ; Setting xl2=xl ensures _min_xl=_max_xl=xl, so left segment is empty
+        lda zp_xl
         sta zp_xl2
-        lda #0
-        sta zp_xr2
+        sta zp_xr2              ; xl2 == xr2 means empty span
         jsr draw_dual_row
         jmp _advance_one
 
@@ -564,8 +565,8 @@ _advance_one
 ; zp_y is the top scanline (must be even).
 ;
 ; Input: zp_y = top scanline (even)
-;        zp_xl, zp_xr = left/right for top row (inclusive)
-;        zp_xl2, zp_xr2 = left/right for bottom row (inclusive)
+;        zp_xl, zp_xr = left/right for top row [xl, xr) exclusive
+;        zp_xl2, zp_xr2 = left/right for bottom row [xl2, xr2) exclusive
 ;        zp_color = color (0-3)
 ;
 ; Destroys: A, X, Y
@@ -592,34 +593,64 @@ _dual_row_start
         lda #0
         sta zp_xl2
 +
-        ; xr1 = min(SCREEN_WIDTH-1, xr1)
+        ; xr1 = min(SCREEN_WIDTH, xr1) - for [xl, xr) exclusive, xr can be 80
         lda zp_xr
-        cmp #SCREEN_WIDTH
+        cmp #SCREEN_WIDTH+1
         bcc +
-        lda #SCREEN_WIDTH-1
+        lda #SCREEN_WIDTH
         sta zp_xr
 +
-        ; xr2 = min(SCREEN_WIDTH-1, xr2)
+        ; xr2 = min(SCREEN_WIDTH, xr2)
         lda zp_xr2
-        cmp #SCREEN_WIDTH
+        cmp #SCREEN_WIDTH+1
         bcc +
-        lda #SCREEN_WIDTH-1
+        lda #SCREEN_WIDTH
         sta zp_xr2
 +
-        ; Find overall x range
-        ; x_min = min(xl1, xl2)
+        ; Find overall x range (only considering valid rows)
+        ; Row is valid if xl < xr (using [xl, xr) convention)
+        ; x_min = min of valid rows' xl values
+        ; x_max = max of valid rows' xr values
+
+        ; Check which rows are valid
+        ; Top row valid if xl < xr
+        lda zp_xl
+        cmp zp_xr
+        bcc _top_valid
+        ; Top invalid - use bottom row values only
+        lda zp_xl2
+        sta _x_min
+        lda zp_xr2
+        sta _x_max
+        jmp _x_range_done
+
+_top_valid
+        ; Top valid - check if bottom also valid
+        lda zp_xl2
+        cmp zp_xr2
+        bcc _both_valid
+        ; Only top valid - use top row values
+        lda zp_xl
+        sta _x_min
+        lda zp_xr
+        sta _x_max
+        jmp _x_range_done
+
+_both_valid
+        ; Both rows valid - use min/max
         lda zp_xl
         cmp zp_xl2
         bcc +
         lda zp_xl2
 +       sta _x_min
 
-        ; x_max = max(xr1, xr2)
         lda zp_xr
         cmp zp_xr2
         bcs +
         lda zp_xr2
 +       sta _x_max
+
+_x_range_done
 
         ; Character range
         ; char_start = x_min >> 1
@@ -661,12 +692,41 @@ _dual_row_start
         ; right_start= (min(xr, xr2) + 1) >> 1   ; first char of right segment
         ; ----------------------------------------------------------------
 
-        ; max(xl, xl2)
+        ; min(xl, xl2) and max(xl, xl2)
         lda zp_xl
         cmp zp_xl2
-        bcs +
+        bcc _xl_less
+        ; xl >= xl2: min=xl2, max=xl
         lda zp_xl2
-+       sta _max_xl
+        sta _min_xl
+        lda zp_xl
+        sta _max_xl
+        ; Top row starts later, so bottom row active in left segment
+        lda #$F0                ; inverse mask: clear bottom bits, keep top
+        sta _left_mask
+        jmp _got_xl_minmax
+_xl_less
+        ; xl < xl2: min=xl, max=xl2
+        lda zp_xl
+        sta _min_xl
+        lda zp_xl2
+        sta _max_xl
+        ; Bottom row starts later, so top row active in left segment
+        lda #$0F                ; inverse mask: clear top bits, keep bottom
+        sta _left_mask
+_got_xl_minmax
+        ; xstop = max_xl & 0xFE (round down to even)
+        lda _max_xl
+        and #$FE
+        sta _xstop
+
+        ; Left color: color pattern masked for active row
+        ; If _left_mask = $0F (top active): color_byte & $F0
+        ; If _left_mask = $F0 (bottom active): color_byte & $0F
+        lda _left_mask
+        eor #$FF                ; invert to get the active row mask
+        and _color_byte
+        sta _left_color
 
         ; min(xr, xr2)
         lda zp_xr
@@ -676,26 +736,10 @@ _dual_row_start
 +       sta _min_xr
 
         ; Segment boundaries (from plan):
-        ; left_end   = (max(xl, xl2) - 1) >> 1   ; last char of left segment
         ; mid_start  = max(xl, xl2) >> 1         ; first char of middle segment
         ; mid_end    = min(xr, xr2) >> 1         ; last char of middle segment
         ; right_start= (min(xr, xr2) + 1) >> 1   ; first char of right segment
 
-        ; left_end = (max_xl - 1) >> 1
-        ; Handle case where max_xl=0: result would underflow
-        lda _max_xl
-        beq _left_end_zero
-        sec
-        sbc #1
-        lsr a
-        sta _left_end
-        jmp _calc_mid_start
-_left_end_zero
-        ; max_xl=0 means left segment is empty (char_start would be 0, left_end would be -1)
-        lda #$ff                ; Set to "before" char_start so loop won't run
-        sta _left_end
-
-_calc_mid_start
         ; mid_start = max_xl >> 1
         lda _max_xl
         lsr a
@@ -714,8 +758,10 @@ _calc_mid_start
         sta _right_start
 
         ; Compute "tight" middle range where ALL 4 pixels are set:
-        ; tight_mid_start = (max_xl + 1) >> 1  (first char fully inside)
-        ; tight_mid_end = (min_xr - 1) >> 1    (last char fully inside)
+        ; For char C to be fully covered by [xl, xr):
+        ;   both pixels 2*C and 2*C+1 must satisfy xl <= px < xr
+        ; tight_mid_start: need 2*C >= max_xl, so C >= ceil(max_xl/2) = (max_xl+1)>>1
+        ; tight_mid_end: need 2*C+1 < min_xr, so C < (min_xr-1)/2, i.e. C <= (min_xr-2)>>1
         lda _max_xl
         clc
         adc #1
@@ -723,9 +769,10 @@ _calc_mid_start
         sta _tight_mid_start
 
         lda _min_xr
-        beq _tight_end_zero
+        cmp #2
+        bcc _tight_end_zero     ; min_xr < 2, no tight middle
         sec
-        sbc #1
+        sbc #2
         lsr a
         sta _tight_mid_end
         jmp _begin_left_segment
@@ -735,24 +782,62 @@ _tight_end_zero
 
 _begin_left_segment
         ; ----------------------------------------------------------------
-        ; LEFT SEGMENT: char_start to left_end
-        ; For now, just use inner loop (will optimize later)
+        ; LEFT SEGMENT (pixel-based iteration)
+        ; x iterates from min(xl,xl2) to max(xl,xl2)
+        ; Only one row is active; use optimized fixed-mask body
         ; ----------------------------------------------------------------
-        lda zp_char_start
+
+        ; Initialize pixel position
+        lda _min_xl
+        sta _left_x
+
+        ; FIRST ITERATION (unrolled)
+        ; If x is even, no partial first char - skip to main loop
+        and #1
+        beq _left_segment_main
+
+        ; Handle odd start - run generic body for first partial char
+        lda _left_x
+        lsr a                       ; convert to char position
         sta zp_char_x
-
-_left_seg_loop
-        lda zp_char_x
-        cmp _left_end
-        beq _left_seg_char
-        bcc _left_seg_char
-        jmp _middle_segment     ; char_x > left_end, done with left segment
-
-_left_seg_char
-        ; Process this char using the existing inner loop code
         jsr _process_char_inner
-        inc zp_char_x
-        jmp _left_seg_loop
+        inc _left_x                 ; now x is even
+
+_left_segment_main
+        ; Check if done with main loop
+        lda _left_x
+        cmp _xstop
+        bcs _left_segment_end       ; x >= xstop, exit main loop
+
+        ; Optimized body: one row covers both pixels of this char
+        ; char_x = _left_x >> 1
+        lda _left_x
+        lsr a
+        tay                         ; Y = char column
+        lda (zp_screen_lo),y
+        and _left_mask              ; clear active row bits (keep other row)
+        ora _left_color             ; set color for active row
+        sta (zp_screen_lo),y
+
+        ; Advance by 2 pixels (one char)
+        lda _left_x
+        clc
+        adc #2
+        sta _left_x
+        jmp _left_segment_main
+
+_left_segment_end
+        ; Check if we've reached mid segment
+        lda _left_x
+        cmp _max_xl
+        bcs _middle_segment         ; x >= max_xl, go to middle
+
+        ; Run generic body for transition char
+        lda _left_x
+        lsr a
+        sta zp_char_x
+        jsr _process_char_inner
+        ; Note: we don't need to advance _left_x here since we're done with left segment
 
         ; ----------------------------------------------------------------
         ; MIDDLE SEGMENT: mid_start to mid_end
@@ -830,34 +915,31 @@ _process_char_inner
         sta _px_right
 
         ; Top row coverage (bits 1=left, 0=right in top_bits)
-        ; top_left = (px_left >= xl1 && px_left <= xr1) ? 1 : 0
-        ; top_right = (px_right >= xl1 && px_right <= xr1) ? 1 : 0
+        ; Using [xl, xr) convention: pixel x covered if xl <= x < xr
+        ; top_left = (px_left >= xl && px_left < xr) ? 1 : 0
+        ; top_right = (px_right >= xl && px_right < xr) ? 1 : 0
         ; top_bits = (top_left << 1) | top_right
 
         lda #0
         sta _top_bits
 
-        ; Check left pixel of top row: px_left >= xl && px_left <= xr
+        ; Check left pixel of top row: px_left >= xl && px_left < xr
         lda _px_left
         cmp zp_xl
-        bcc _tl_skip            ; px_left < xl1, not covered
+        bcc _tl_skip            ; px_left < xl, not covered
         cmp zp_xr
-        beq _tl_covered         ; px_left == xr1, covered
-        bcs _tl_skip            ; px_left > xr1, not covered
-_tl_covered
+        bcs _tl_skip            ; px_left >= xr, not covered
         lda _top_bits
         ora #2                  ; Set left bit
         sta _top_bits
 _tl_skip
 
-        ; Check right pixel of top row
+        ; Check right pixel of top row: px_right >= xl && px_right < xr
         lda _px_right
         cmp zp_xl
         bcc _tr_skip
         cmp zp_xr
-        beq _tr_covered
-        bcs _tr_skip
-_tr_covered
+        bcs _tr_skip            ; px_right >= xr, not covered
         lda _top_bits
         ora #1                  ; Set right bit
         sta _top_bits
@@ -867,27 +949,23 @@ _tr_skip
         lda #0
         sta _bot_bits
 
-        ; Check left pixel of bottom row
+        ; Check left pixel of bottom row: px_left >= xl2 && px_left < xr2
         lda _px_left
         cmp zp_xl2
         bcc _bl_skip
         cmp zp_xr2
-        beq _bl_covered
-        bcs _bl_skip
-_bl_covered
+        bcs _bl_skip            ; px_left >= xr2, not covered
         lda _bot_bits
         ora #2
         sta _bot_bits
 _bl_skip
 
-        ; Check right pixel of bottom row
+        ; Check right pixel of bottom row: px_right >= xl2 && px_right < xr2
         lda _px_right
         cmp zp_xl2
         bcc _br_skip
         cmp zp_xr2
-        beq _br_covered
-        bcs _br_skip
-_br_covered
+        bcs _br_skip            ; px_right >= xr2, not covered
         lda _bot_bits
         ora #1
         sta _bot_bits
@@ -939,19 +1017,18 @@ _bot_bits       .byte 0
 _set_mask       .byte 0
 _color_byte     .byte 0
 ; Segment boundaries
-_max_xl         .byte 0         ; max(xl, xl2)
+_min_xl         .byte 0         ; min(xl, xl2) - pixel position
+_max_xl         .byte 0         ; max(xl, xl2) - pixel position
 _min_xr         .byte 0         ; min(xr, xr2)
-_left_end       .byte 0         ; last char of left segment
+_xstop          .byte 0         ; max(xl, xl2) & 0xFE - end of left main loop
+_left_x         .byte 0         ; current pixel position in left segment
 _mid_start      .byte 0         ; first char of middle segment
 _mid_end        .byte 0         ; last char of middle segment
 _right_start    .byte 0         ; first char of right segment
 _tight_mid_start .byte 0        ; first char with all 4 pixels set
 _tight_mid_end  .byte 0         ; last char with all 4 pixels set
-_tight_start_clamped .byte 0    ; clamped to [mid_start, mid_end]
-_tight_end_clamped .byte 0      ; clamped to [mid_start, mid_end]
-_left_mask      .byte 0         ; $F0 (top) or $0F (bottom) for left segment
-_left_color     .byte 0         ; color byte masked for left segment
-_tight_left_start .byte 0       ; first char with full coverage in left segment
+_left_mask      .byte 0         ; $0F (top active) or $F0 (bottom active) - inverse mask
+_left_color     .byte 0         ; color byte masked for active row in left segment
 
 ; ============================================================================
 ; ROUTINE: draw_span
@@ -961,23 +1038,21 @@ _tight_left_start .byte 0       ; first char with full coverage in left segment
 ;
 ; Input: zp_y = scanline
 ;        zp_xl = left X (inclusive)
-;        zp_xr = right X (inclusive)
+;        zp_xr = right X (exclusive)
 ;        zp_color = color (0-3)
 ;
 ; Destroys: A, X, Y
 ; ============================================================================
 
 draw_span
-        ; For each x from xl to xr (inclusive), call set_pixel_v2
+        ; For each x from xl to xr [xl, xr) exclusive, call set_pixel_v2
         lda zp_xl
         sta _span_x
 
 _span_loop
         lda _span_x
         cmp zp_xr
-        beq +
-        bcs _span_done          ; x > xr, done
-+
+        bcs _span_done          ; x >= xr, done
         ; Set pixel at (x, y)
         ldx _span_x
         ldy zp_y

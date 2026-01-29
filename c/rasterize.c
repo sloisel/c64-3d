@@ -221,7 +221,7 @@ void draw_triangle(unsigned char *buf, int ax, int ay, int bx, int by,
         while (y < by) {
             int y_next = y + 1;
 
-            /* Get x endpoints for current scanline */
+            /* Get x endpoints for current scanline [xl, xr) */
             int xl = (b_on_left ? x_short : x_long) >> 8;
             int xr = (b_on_left ? x_long : x_short) >> 8;
             if (xl > xr) swap_int(&xl, &xr);
@@ -236,20 +236,20 @@ void draw_triangle(unsigned char *buf, int ax, int ay, int bx, int by,
                 int xr2 = (b_on_left ? x_long2 : x_short2) >> 8;
                 if (xl2 > xr2) swap_int(&xl2, &xr2);
 
-                draw_dual_row(buf, y, xl, xr + 1, xl2, xr2 + 1, color);
+                draw_dual_row(buf, y, xl, xr, xl2, xr2, color);
 
                 x_long += dx_ac << 1;
                 x_short += dx_ab << 1;
                 y += 2;
             } else if (((y & 1) == 0) && (y_next >= by)) {
                 /* Single row at even y, use dual row with empty second row */
-                draw_dual_row(buf, y, xl, xr + 1, 0, 0, color);
+                draw_dual_row(buf, y, xl, xr, 0, 0, color);
                 x_long += dx_ac;
                 x_short += dx_ab;
                 y++;
             } else {
                 /* Odd y - draw single span */
-                draw_span(buf, y, xl, xr + 1, color);
+                draw_span(buf, y, xl, xr, color);
                 x_long += dx_ac;
                 x_short += dx_ab;
                 y++;
@@ -271,6 +271,7 @@ void draw_triangle(unsigned char *buf, int ax, int ay, int bx, int by,
         while (y < cy) {
             int y_next = y + 1;
 
+            /* [xl, xr) */
             int xl = (b_on_left ? x_short : x_long) >> 8;
             int xr = (b_on_left ? x_long : x_short) >> 8;
             if (xl > xr) swap_int(&xl, &xr);
@@ -283,18 +284,18 @@ void draw_triangle(unsigned char *buf, int ax, int ay, int bx, int by,
                 int xr2 = (b_on_left ? x_long2 : x_short2) >> 8;
                 if (xl2 > xr2) swap_int(&xl2, &xr2);
 
-                draw_dual_row(buf, y, xl, xr + 1, xl2, xr2 + 1, color);
+                draw_dual_row(buf, y, xl, xr, xl2, xr2, color);
 
                 x_long += dx_ac << 1;
                 x_short += dx_bc << 1;
                 y += 2;
             } else if (((y & 1) == 0) && (y_next >= cy)) {
-                draw_dual_row(buf, y, xl, xr + 1, 0, 0, color);
+                draw_dual_row(buf, y, xl, xr, 0, 0, color);
                 x_long += dx_ac;
                 x_short += dx_bc;
                 y++;
             } else {
-                draw_span(buf, y, xl, xr + 1, color);
+                draw_span(buf, y, xl, xr, color);
                 x_long += dx_ac;
                 x_short += dx_bc;
                 y++;

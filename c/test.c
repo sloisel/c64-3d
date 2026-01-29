@@ -60,7 +60,8 @@ static void reference_triangle(unsigned char *buf, int ax, int ay, int bx, int b
         int xl = (x_ac_fp < x_other_fp ? x_ac_fp : x_other_fp) >> 8;
         int xr = (x_ac_fp > x_other_fp ? x_ac_fp : x_other_fp) >> 8;
 
-        for (int x = xl; x <= xr; x++) {
+        /* [xl, xr) exclusive convention */
+        for (int x = xl; x < xr; x++) {
             set_pixel(buf, x, y, color);
         }
     }
