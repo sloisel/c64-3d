@@ -649,17 +649,177 @@ _dual_row_start
         lda color_pattern,x
         sta _color_byte
 
-        ; Process each character column
+        ; ----------------------------------------------------------------
+        ; Compute segment boundaries
+        ; Left segment:  char_start to left_end   (one row active)
+        ; Middle segment: mid_start to mid_end    (both rows fully active)
+        ; Right segment: right_start to char_end  (one row active)
+        ;
+        ; left_end   = (max(xl, xl2) - 1) >> 1   ; last char of left segment
+        ; mid_start  = max(xl, xl2) >> 1         ; first char of middle segment
+        ; mid_end    = min(xr, xr2) >> 1         ; last char of middle segment
+        ; right_start= (min(xr, xr2) + 1) >> 1   ; first char of right segment
+        ; ----------------------------------------------------------------
+
+        ; max(xl, xl2)
+        lda zp_xl
+        cmp zp_xl2
+        bcs +
+        lda zp_xl2
++       sta _max_xl
+
+        ; min(xr, xr2)
+        lda zp_xr
+        cmp zp_xr2
+        bcc +
+        lda zp_xr2
++       sta _min_xr
+
+        ; Segment boundaries (from plan):
+        ; left_end   = (max(xl, xl2) - 1) >> 1   ; last char of left segment
+        ; mid_start  = max(xl, xl2) >> 1         ; first char of middle segment
+        ; mid_end    = min(xr, xr2) >> 1         ; last char of middle segment
+        ; right_start= (min(xr, xr2) + 1) >> 1   ; first char of right segment
+
+        ; left_end = (max_xl - 1) >> 1
+        ; Handle case where max_xl=0: result would underflow
+        lda _max_xl
+        beq _left_end_zero
+        sec
+        sbc #1
+        lsr a
+        sta _left_end
+        jmp _calc_mid_start
+_left_end_zero
+        ; max_xl=0 means left segment is empty (char_start would be 0, left_end would be -1)
+        lda #$ff                ; Set to "before" char_start so loop won't run
+        sta _left_end
+
+_calc_mid_start
+        ; mid_start = max_xl >> 1
+        lda _max_xl
+        lsr a
+        sta _mid_start
+
+        ; mid_end = min_xr >> 1
+        lda _min_xr
+        lsr a
+        sta _mid_end
+
+        ; right_start = (min_xr + 1) >> 1
+        lda _min_xr
+        clc
+        adc #1
+        lsr a
+        sta _right_start
+
+        ; Compute "tight" middle range where ALL 4 pixels are set:
+        ; tight_mid_start = (max_xl + 1) >> 1  (first char fully inside)
+        ; tight_mid_end = (min_xr - 1) >> 1    (last char fully inside)
+        lda _max_xl
+        clc
+        adc #1
+        lsr a
+        sta _tight_mid_start
+
+        lda _min_xr
+        beq _tight_end_zero
+        sec
+        sbc #1
+        lsr a
+        sta _tight_mid_end
+        jmp _begin_left_segment
+_tight_end_zero
+        lda #$ff                ; No tight middle
+        sta _tight_mid_end
+
+_begin_left_segment
+        ; ----------------------------------------------------------------
+        ; LEFT SEGMENT: char_start to left_end
+        ; For now, just use inner loop (will optimize later)
+        ; ----------------------------------------------------------------
         lda zp_char_start
         sta zp_char_x
 
-_dual_col_loop
+_left_seg_loop
+        lda zp_char_x
+        cmp _left_end
+        beq _left_seg_char
+        bcc _left_seg_char
+        jmp _middle_segment     ; char_x > left_end, done with left segment
+
+_left_seg_char
+        ; Process this char using the existing inner loop code
+        jsr _process_char_inner
+        inc zp_char_x
+        jmp _left_seg_loop
+
+        ; ----------------------------------------------------------------
+        ; MIDDLE SEGMENT: mid_start to mid_end
+        ; Edge chars may be partial, tight middle has all 4 pixels
+        ; ----------------------------------------------------------------
+_middle_segment
+        lda _mid_start
+        sta zp_char_x
+
+_middle_loop
+        ; Check if done
+        lda zp_char_x
+        cmp _mid_end
+        beq _middle_process
+        bcs _right_segment
+
+_middle_process
+        ; Check if in tight range (all 4 pixels set)
+        lda zp_char_x
+        cmp _tight_mid_start
+        bcc _middle_partial     ; char_x < tight_start
+        cmp _tight_mid_end
+        beq _middle_direct      ; char_x == tight_end
+        bcs _middle_partial     ; char_x > tight_end
+
+_middle_direct
+        ; Direct write
+        ldy zp_char_x
+        lda _color_byte
+        sta (zp_screen_lo),y
+        inc zp_char_x
+        jmp _middle_loop
+
+_middle_partial
+        ; Partial char - use inner loop
+        jsr _process_char_inner
+        inc zp_char_x
+        jmp _middle_loop
+
+        ; ----------------------------------------------------------------
+        ; RIGHT SEGMENT: right_start to char_end
+        ; ----------------------------------------------------------------
+_right_segment
+        lda _right_start
+        sta zp_char_x
+
+_right_seg_loop
         lda zp_char_x
         cmp zp_char_end
-        beq _process_char
-        bcc _process_char
+        beq _right_seg_char
+        bcc _right_seg_char
         jmp _dual_row_done      ; char_x > char_end, done
-_process_char
+
+_right_seg_char
+        ; Process this char using the existing inner loop code
+        jsr _process_char_inner
+        inc zp_char_x
+        jmp _right_seg_loop
+
+; ============================================================================
+; Inner loop processing for a single character (extracted for reuse)
+; Input: zp_char_x = character column to process
+;        zp_screen_lo/hi = row base address
+;        zp_xl, zp_xr, zp_xl2, zp_xr2 = edge positions
+;        _color_byte = color pattern
+; ============================================================================
+_process_char_inner
         ; Determine pixel coverage for this character
         ; px_left = char_x << 1
         ; px_right = (char_x << 1) + 1
@@ -740,7 +900,7 @@ _br_skip
         sta _set_mask
 
         ; Skip if no pixels to set
-        beq _next_char
+        beq _process_char_done
 
         ; Calculate screen offset
         ldy zp_char_x
@@ -753,7 +913,7 @@ _br_skip
         ; Full character: direct write
         lda _color_byte
         sta (zp_screen_lo),y
-        jmp _next_char
+        rts                     ; Return from _process_char_inner
 
 _read_modify_write
         ; Partial: read-modify-write
@@ -763,9 +923,8 @@ _read_modify_write
         eor (zp_screen_lo),y    ; XOR back to get final value
         sta (zp_screen_lo),y
 
-_next_char
-        inc zp_char_x
-        jmp _dual_col_loop
+_process_char_done
+        rts                     ; Return from _process_char_inner
 
 _dual_row_done
         rts
@@ -779,6 +938,20 @@ _top_bits       .byte 0
 _bot_bits       .byte 0
 _set_mask       .byte 0
 _color_byte     .byte 0
+; Segment boundaries
+_max_xl         .byte 0         ; max(xl, xl2)
+_min_xr         .byte 0         ; min(xr, xr2)
+_left_end       .byte 0         ; last char of left segment
+_mid_start      .byte 0         ; first char of middle segment
+_mid_end        .byte 0         ; last char of middle segment
+_right_start    .byte 0         ; first char of right segment
+_tight_mid_start .byte 0        ; first char with all 4 pixels set
+_tight_mid_end  .byte 0         ; last char with all 4 pixels set
+_tight_start_clamped .byte 0    ; clamped to [mid_start, mid_end]
+_tight_end_clamped .byte 0      ; clamped to [mid_start, mid_end]
+_left_mask      .byte 0         ; $F0 (top) or $0F (bottom) for left segment
+_left_color     .byte 0         ; color byte masked for left segment
+_tight_left_start .byte 0       ; first char with full coverage in left segment
 
 ; ============================================================================
 ; ROUTINE: draw_span

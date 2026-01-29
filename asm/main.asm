@@ -227,14 +227,137 @@ main
         lda #0
         jsr clear_screen
 
+        ; Start timing
+        jsr tic
+
         ; Draw isometric cube (same as C --demo)
         jsr draw_demo_cube
+
+        ; Stop timing
+        jsr toc
 
         ; Compare screen RAM with expected data
         jsr compare_screen
 
         ; Infinite loop - result is in $02-$03 (0 = PASS)
 -       jmp -
+
+; ============================================================================
+; tic - Start raster-based timing
+; Sets up raster interrupt at line $80 that increments counter
+; ============================================================================
+tic
+        sei                     ; Disable interrupts
+
+        ; Initialize counter to $FF (-1, so first interrupt makes it 0)
+        lda #$ff
+        sta tic_counter
+
+        ; Save old IRQ vector
+        lda $0314
+        sta tic_old_irq
+        lda $0315
+        sta tic_old_irq+1
+
+        ; Set up our IRQ handler
+        lda #<tic_irq_handler
+        sta $0314
+        lda #>tic_irq_handler
+        sta $0315
+
+        ; Set raster line $80 for interrupt
+        lda $d011
+        and #$7f                ; Clear bit 8 of raster compare
+        sta $d011
+        lda #$80
+        sta $d012               ; Raster line $80
+
+        ; Enable raster interrupt
+        lda #$01
+        sta $d01a               ; Enable raster IRQ
+
+        ; Acknowledge any pending VIC IRQ
+        sta $d019
+
+        cli                     ; Enable interrupts
+        rts
+
+tic_irq_handler
+        ; Acknowledge VIC interrupt
+        lda #$01
+        sta $d019
+
+        ; Increment counter
+        inc tic_counter
+
+        ; Jump to KERNAL IRQ handler (handles keyboard etc)
+        jmp $ea31
+
+; ============================================================================
+; toc - Stop timing and capture raster position
+; Stores: A (counter before), B (raster), C (counter after), D (raster)
+; ============================================================================
+toc
+        ; Capture A = counter
+        lda tic_counter
+        sta toc_a
+
+        ; Read raster position B (9-bit, need careful read)
+        ; Read hi, lo, hi, lo - if hi1==hi2 use (hi1,lo1), else (hi2,lo2)
+        lda $d011
+        and #$80                ; Bit 7 = raster bit 8
+        sta toc_b_hi_1
+        lda $d012
+        sta toc_b_lo_1
+        lda $d011
+        and #$80
+        sta toc_b_hi_2
+        lda $d012
+        sta toc_b_lo_2
+
+        ; Capture C = counter
+        lda tic_counter
+        sta toc_c
+
+        ; Read raster position D
+        lda $d011
+        and #$80
+        sta toc_d_hi_1
+        lda $d012
+        sta toc_d_lo_1
+        lda $d011
+        and #$80
+        sta toc_d_hi_2
+        lda $d012
+        sta toc_d_lo_2
+
+        ; Disable raster interrupt
+        sei
+        lda #$00
+        sta $d01a
+
+        ; Restore old IRQ vector
+        lda tic_old_irq
+        sta $0314
+        lda tic_old_irq+1
+        sta $0315
+
+        cli
+        rts
+
+; Timing variables
+tic_counter     .byte 0
+tic_old_irq     .word 0
+toc_a           .byte 0         ; Counter before raster read
+toc_b_hi_1      .byte 0         ; Raster B high (first read)
+toc_b_lo_1      .byte 0         ; Raster B low (first read)
+toc_b_hi_2      .byte 0         ; Raster B high (second read)
+toc_b_lo_2      .byte 0         ; Raster B low (second read)
+toc_c           .byte 0         ; Counter after raster read
+toc_d_hi_1      .byte 0         ; Raster D high (first read)
+toc_d_lo_1      .byte 0         ; Raster D low (first read)
+toc_d_hi_2      .byte 0         ; Raster D high (second read)
+toc_d_lo_2      .byte 0         ; Raster D low (second read)
 
 ; ============================================================================
 ; draw_demo_cube - Draw the test cube
@@ -436,68 +559,8 @@ div_divisor     .byte 0
 div_dividend    .byte 0
 div_p0_hi       .byte 0
 
-; ============================================================================
-; mul8x8_unsigned - Unsigned 8×8=16 multiplication
-; ============================================================================
-; Based on mult66.a from TobyLobster/multiply_test.
-;
-; Input:  X = multiplicand (0-255)
-;         Y = multiplier   (0-255)
-; Output: A = high byte of product
-;         prod_low = low byte of product
-;
-; Requires: zp_mul_ptr0/ptr1 initialized via mul8x8_init
-; ============================================================================
-mul8x8_unsigned
-        stx zp_mul_ptr0         ; store X for table indexing
-        stx zp_mul_ptr1
-        tya                     ; A = Y
-        sec
-        sbc zp_mul_ptr0         ; A = Y - X
-        tax                     ; X = Y - X (may be negative)
-        lda (zp_mul_ptr0),y     ; sqr_lo[X+Y]
-        bcc _mu8neg             ; branch if Y < X
-        ; Y >= X case
-        sbc sqr_lo,x
-        sta prod_low
-        lda (zp_mul_ptr1),y
-        sbc sqr_hi,x
-        rts
-_mu8neg
-        ; Y < X case: use negsqr tables (with -1 offset for carry compensation)
-        sbc negsqr_lo,x
-        sta prod_low
-        lda (zp_mul_ptr1),y
-        sbc negsqr_hi,x
-        rts
-
-; ============================================================================
-; mul8x8_signed - Signed 8×8=16 multiplication
-; ============================================================================
-; Based on smult11.a from TobyLobster/multiply_test.
-; Original by Piotr Fusik (Syzygy 6, 1999)
-;
-; Input:  A = first signed 8-bit value (-128 to 127)
-;         Y = second signed 8-bit value (-128 to 127)
-; Output: Y = low byte of product
-;         A = high byte of product
-;         (16-bit signed result in A:Y, high:low)
-; ============================================================================
-mul8x8_signed
-        eor #$80
-        sta _sm1+1
-        sta _sm3+1
-        eor #$ff
-        sta _sm2+1
-        sta _sm4+1
-        ldx smult_eorx,y
-        sec
-_sm1    lda smult_sq1_lo,x
-_sm2    sbc smult_sq2_lo,x
-        tay
-_sm3    lda smult_sq1_hi,x
-_sm4    sbc smult_sq2_hi,x
-        rts
+cycle_count_lo  .byte 0
+cycle_count_hi  .byte 0
 
 ; ============================================================================
 ; Include rasterizer
