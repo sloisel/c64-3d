@@ -193,6 +193,8 @@ zp_x_short2_lo  = $28
 zp_x_short2_hi  = $29
 zp_dx_temp      = $2a
 zp_dy_temp      = $2b
+zp_adj_lo       = $2c   ; Adjusted pointer for fast blitter
+zp_adj_hi       = $2d
 
 ; ----------------------------------------------------------------------------
 ; Constants

@@ -834,15 +834,30 @@ _drs_start
         sta (zp_screen_lo),y
 
 _drs_full_loop
-        ldy _drs_full_start
-        lda _drs_color_byte     ; Load color pattern once
-_drs_full_next
-        cpy _drs_full_end
-        bcs _drs_right_partial
-        ; Direct write - no masking needed for full chars!
-        sta (zp_screen_lo),y
-        iny
-        bne _drs_full_next      ; Always taken (Y < 40)
+        ; SMC version: 10 cycles/char inner loop
+        ; Patch address = screen + full_start, X counts down from count-1 to 0
+        clc
+        lda zp_screen_lo
+        adc _drs_full_start
+        sta _drs_smc_sta + 1
+        lda zp_screen_hi
+        adc #0
+        sta _drs_smc_sta + 2
+
+        ; X = count - 1 = full_end - full_start - 1
+        lda _drs_full_end
+        sec
+        sbc _drs_full_start
+        beq _drs_right_partial  ; count = 0, skip
+        tax
+        dex
+        bmi _drs_right_partial  ; count = 1 but underflowed (shouldn't happen, but safe)
+
+        lda _drs_color_byte
+_drs_smc_sta
+        sta $ffff,x             ; 5 cycles - address gets patched
+        dex                     ; 2 cycles
+        bpl _drs_smc_sta        ; 3 cycles = 10 total
 
 _drs_right_partial
         ; Check if xr is odd (right partial needed)
@@ -850,7 +865,7 @@ _drs_right_partial
         lsr a                   ; carry = xr & 1
         bcc _drs_done           ; xr even, no right partial
         ; RMW with mask $CC (left pixels only)
-        ; Y = full_end
+        ldy _drs_full_end       ; Restore Y (was 0 after fast loop)
         lda _drs_color_byte
         and #$cc                ; Keep only left pixel bits
         sta _drs_temp

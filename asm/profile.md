@@ -1,13 +1,14 @@
 # Rasterizer Performance Profile
 
 ## Current Status
-- **Cycle count**: ~102,000 cycles (draw_demo_cube)
+- **Cycle count**: ~102,000-104,000 cycles (draw_demo_cube)
 - **Speedup**: 70% faster than baseline
 
 ## Timing Method
 - `tic`: Sets up raster interrupt at line 0, waits for counter=0, then returns
 - `toc`: Captures counter + raster position
 - Cycles = (counter × 19656) + (raster_line × 63)
+- **Margin of error**: ~2,000-3,000 cycles due to raster interrupt jitter and measurement timing
 
 ## Optimization History
 
@@ -17,6 +18,7 @@
 | Step 2 | Middle segment tight STA | 12 | 256 | 244,000 | 29% |
 | Step 3 | [xl,xr) exclusive + left segment | 10 | 211 | 210,000 | 39% |
 | Step 4 | Interval-based blitter | 5 | 64 | 102,000 | 70% |
+| Step 5 | 11-cycle inner loop (draw_dual_row_simple) | 5 | 91 | 104,000 | 70% |
 
 ## Current Architecture (Step 4)
 
@@ -40,6 +42,10 @@ Replaced segment-based draw_dual_row with decision tree dispatcher:
 - Full characters in draw_dual_row_simple: direct write, no masking
 - Lookup tables for color patterns: color_top, color_bottom, color_pattern
 - Bifurcated routines: no runtime y&1 check in span routines
+- **11-cycle inner loop** in draw_dual_row_simple: adjusted base pointer trick
+  eliminates compare instruction (sta/iny/bne vs sta/iny/cpy/bcs = 11 vs 16 cycles)
+  - Setup cost ~29 cycles, break-even ~5 full chars per span
+  - TODO: Review setup code for potential streamlining
 
 ### Code Size
 - Old draw_dual_row + draw_span: ~500 lines
