@@ -91,79 +91,214 @@ unsigned char get_pixel(const unsigned char *buf, int x, int y) {
     return (buf[offset] >> shift) & 3;
 }
 
-/* Draw a horizontal span on a single scanline */
-static void draw_span(unsigned char *buf, int y, int xl, int xr, unsigned char color) {
-    for (int x = xl; x < xr; x++) {
-        set_pixel(buf, x, y, color);
+/* Draw a horizontal span on a TOP row (y is even).
+ * Only modifies top 4 bits of each character byte, preserving bottom row.
+ * Assumes all coordinates are on-screen.
+ */
+static void draw_span_top(unsigned char *buf, int y, int xl, int xr, unsigned char color) {
+    init_tables();
+
+    if (xl >= xr) return;  /* Empty interval */
+
+    int char_y = y >> 1;
+    unsigned char *row = buf + row_offset[char_y];
+
+    /* Top row masks and color pattern */
+    unsigned char mask_left  = PIXEL_TR_MASK;                   /* 0x30: right pixel only */
+    unsigned char mask_right = PIXEL_TL_MASK;                   /* 0xC0: left pixel only */
+    unsigned char mask_full  = PIXEL_TL_MASK | PIXEL_TR_MASK;   /* 0xF0: both pixels */
+    unsigned char color_bits = (color << PIXEL_TL_SHIFT) | (color << PIXEL_TR_SHIFT);
+
+    /* Character ranges */
+    int char_start = xl >> 1;
+    int full_start = (xl + 1) >> 1;
+    int full_end   = xr >> 1;
+    int char_end   = (xr + 1) >> 1;
+
+    /* Left partial (xl is odd → only right pixel) */
+    if (char_start < full_start) {
+        row[char_start] = (row[char_start] & ~mask_left) | (color_bits & mask_left);
+    }
+
+    /* Full chars (both pixels, preserve bottom row) */
+    for (int char_x = full_start; char_x < full_end; char_x++) {
+        row[char_x] = (row[char_x] & ~mask_full) | color_bits;
+    }
+
+    /* Right partial (xr is odd → only left pixel) */
+    if (full_end < char_end) {
+        row[full_end] = (row[full_end] & ~mask_right) | (color_bits & mask_right);
     }
 }
 
-/* Draw two scanlines at once (dual-row optimization)
- * y is the top scanline (must be even)
- * xl1, xr1: left and right endpoints for top row
- * xl2, xr2: left and right endpoints for bottom row
+/* Draw a horizontal span on a BOTTOM row (y is odd).
+ * Only modifies bottom 4 bits of each character byte, preserving top row.
+ * Assumes all coordinates are on-screen.
  */
-static void draw_dual_row(unsigned char *buf, int y, int xl1, int xr1,
-                          int xl2, int xr2, unsigned char color) {
+static void draw_span_bottom(unsigned char *buf, int y, int xl, int xr, unsigned char color) {
     init_tables();
 
-    if (y < 0 || y >= SCREEN_HEIGHT - 1) return;
-    if (y & 1) return;  /* Must be even */
+    if (xl >= xr) return;  /* Empty interval */
 
     int char_y = y >> 1;
-    int base_offset = row_offset[char_y];
+    unsigned char *row = buf + row_offset[char_y];
 
-    /* Clamp to screen bounds */
-    if (xl1 < 0) xl1 = 0;
-    if (xl2 < 0) xl2 = 0;
-    if (xr1 > SCREEN_WIDTH) xr1 = SCREEN_WIDTH;
-    if (xr2 > SCREEN_WIDTH) xr2 = SCREEN_WIDTH;
+    /* Bottom row masks and color pattern */
+    unsigned char mask_left  = PIXEL_BR_MASK;                   /* 0x03: right pixel only */
+    unsigned char mask_right = PIXEL_BL_MASK;                   /* 0x0C: left pixel only */
+    unsigned char mask_full  = PIXEL_BL_MASK | PIXEL_BR_MASK;   /* 0x0F: both pixels */
+    unsigned char color_bits = (color << PIXEL_BL_SHIFT) | (color << PIXEL_BR_SHIFT);
 
-    /* Find the overall x range and align to character boundaries */
-    int x_min = (xl1 < xl2) ? xl1 : xl2;
-    int x_max = (xr1 > xr2) ? xr1 : xr2;
+    /* Character ranges */
+    int char_start = xl >> 1;
+    int full_start = (xl + 1) >> 1;
+    int full_end   = xr >> 1;
+    int char_end   = (xr + 1) >> 1;
 
-    /* Start at character boundary containing x_min */
-    int char_start = x_min >> 1;
-    int char_end = (x_max + 1) >> 1;
+    /* Left partial (xl is odd → only right pixel) */
+    if (char_start < full_start) {
+        row[char_start] = (row[char_start] & ~mask_left) | (color_bits & mask_left);
+    }
 
-    /* Process each character column */
-    for (int char_x = char_start; char_x < char_end; char_x++) {
-        if (char_x < 0 || char_x >= CHAR_WIDTH) continue;
+    /* Full chars (both pixels, preserve top row) */
+    for (int char_x = full_start; char_x < full_end; char_x++) {
+        row[char_x] = (row[char_x] & ~mask_full) | color_bits;
+    }
 
-        int offset = base_offset + char_x;
+    /* Right partial (xr is odd → only left pixel) */
+    if (full_end < char_end) {
+        row[full_end] = (row[full_end] & ~mask_right) | (color_bits & mask_right);
+    }
+}
 
-        /* Determine which pixels in this character are covered */
-        int px_left = char_x << 1;
-        int px_right = (char_x << 1) + 1;
+/* Draw both rows on interval [xl, xr) where BOTH rows are fully active.
+ * y is the top scanline (must be even).
+ * This is much simpler than the general case - no per-row boundary logic needed.
+ * Assumes all coordinates are on-screen and y is even.
+ *
+ * Optimized structure:
+ *   1. Left partial char (if xl is odd): only right pixel active
+ *   2. Middle full chars: write color_pattern directly (no masking)
+ *   3. Right partial char (if xr is odd): only left pixel active
+ */
+static void draw_dual_row_simple(unsigned char *buf, int y, int xl, int xr,
+                                 unsigned char color) {
+    init_tables();
 
-        /* Top row coverage */
-        int top_left = (px_left >= xl1 && px_left < xr1) ? 1 : 0;
-        int top_right = (px_right >= xl1 && px_right < xr1) ? 1 : 0;
-        int top_bits = (top_left << 1) | top_right;
+    if (xl >= xr) return;  /* Empty interval */
 
-        /* Bottom row coverage */
-        int bot_left = (px_left >= xl2 && px_left < xr2) ? 1 : 0;
-        int bot_right = (px_right >= xl2 && px_right < xr2) ? 1 : 0;
-        int bot_bits = (bot_left << 1) | bot_right;
+    int char_y = y >> 1;
+    unsigned char *row = buf + row_offset[char_y];
 
-        /* Build the masks */
-        unsigned char set_mask = top_row_mask[top_bits] | bottom_row_mask[bot_bits];
+    /* Build the color pattern once */
+    unsigned char color_pattern = (color << PIXEL_TL_SHIFT) |
+                                  (color << PIXEL_TR_SHIFT) |
+                                  (color << PIXEL_BL_SHIFT) |
+                                  (color << PIXEL_BR_SHIFT);
 
-        if (set_mask == 0) continue;
+    /* Character ranges:
+     * - char_start to char_end: all chars that have any coverage
+     * - full_start to full_end: chars with full coverage (all 4 pixels)
+     */
+    int char_start = xl >> 1;
+    int char_end = (xr + 1) >> 1;
+    int full_start = (xl + 1) >> 1;  /* First full char (skips left partial) */
+    int full_end = xr >> 1;          /* One past last full char */
 
-        /* Build the color pattern */
-        unsigned char color_pattern = (color << PIXEL_TL_SHIFT) |
-                                      (color << PIXEL_TR_SHIFT) |
-                                      (color << PIXEL_BL_SHIFT) |
-                                      (color << PIXEL_BR_SHIFT);
+    /* Left partial character (xl is odd → only right pixel active) */
+    if (char_start < full_start) {
+        unsigned char mask = top_row_mask[1] | bottom_row_mask[1];  /* right only */
+        row[char_start] = (row[char_start] & ~mask) | (color_pattern & mask);
+    }
 
-        /* If all 4 pixels are set, just write */
-        if (set_mask == 0xFF) {
-            buf[offset] = color_pattern;
+    /* Full characters: all 4 pixels, no masking needed */
+    for (int char_x = full_start; char_x < full_end; char_x++) {
+        row[char_x] = color_pattern;
+    }
+
+    /* Right partial character (xr is odd → only left pixel active) */
+    if (full_end < char_end) {
+        unsigned char mask = top_row_mask[2] | bottom_row_mask[2];  /* left only */
+        row[full_end] = (row[full_end] & ~mask) | (color_pattern & mask);
+    }
+}
+
+/* Interval-based dual-row blitter using decision tree.
+ * y is the top scanline (must be even).
+ * xl1, xr1: interval for row 1 (top row, y)
+ * xl2, xr2: interval for row 2 (bottom row, y+1)
+ *
+ * Uses 2-3 comparisons to determine ordering, then calls appropriate
+ * blitter (single-row or dual-row) for each interval.
+ */
+static void draw_dual_row_intervals(unsigned char *buf, int y, int xl1, int xr1,
+                                    int xl2, int xr2, unsigned char color) {
+    /* Handle empty rows */
+    if (xl1 >= xr1 && xl2 >= xr2) return;  /* Both empty */
+    if (xl1 >= xr1) {
+        /* Only row 2 (bottom) */
+        draw_span_bottom(buf, y + 1, xl2, xr2, color);
+        return;
+    }
+    if (xl2 >= xr2) {
+        /* Only row 1 (top) */
+        draw_span_top(buf, y, xl1, xr1, color);
+        return;
+    }
+
+    /* Decision tree: 2-3 comparisons to determine ordering of {xl1, xr1, xl2, xr2} */
+    if (xl1 <= xl2) {
+        if (xr2 <= xr1) {
+            /* CASE 1: Row 2 inside row 1
+             * Order: xl1 <= xl2 <= xr2 <= xr1
+             * Intervals: [xl1,xl2)={1}, [xl2,xr2)={1,2}, [xr2,xr1)={1} */
+            draw_span_top(buf, y, xl1, xl2, color);              /* {1} */
+            draw_dual_row_simple(buf, y, xl2, xr2, color);       /* {1,2} */
+            draw_span_top(buf, y, xr2, xr1, color);              /* {1} */
         } else {
-            /* Read-modify-write */
-            buf[offset] = (buf[offset] & ~set_mask) | (color_pattern & set_mask);
+            /* xr1 < xr2: Need third comparison for overlap check */
+            if (xl2 <= xr1) {
+                /* CASE 2.1: Overlapping
+                 * Order: xl1 <= xl2 <= xr1 <= xr2
+                 * Intervals: [xl1,xl2)={1}, [xl2,xr1)={1,2}, [xr1,xr2)={2} */
+                draw_span_top(buf, y, xl1, xl2, color);              /* {1} */
+                draw_dual_row_simple(buf, y, xl2, xr1, color);       /* {1,2} */
+                draw_span_bottom(buf, y + 1, xr1, xr2, color);       /* {2} */
+            } else {
+                /* CASE 2.2: Disjoint (empty middle)
+                 * Order: xl1 <= xr1 < xl2 <= xr2
+                 * Intervals: [xl1,xr1)={1}, [xr1,xl2)={}, [xl2,xr2)={2} */
+                draw_span_top(buf, y, xl1, xr1, color);              /* {1} */
+                /* gap [xr1, xl2) has active set {} - nothing to draw */
+                draw_span_bottom(buf, y + 1, xl2, xr2, color);       /* {2} */
+            }
+        }
+    } else {
+        /* xl2 < xl1 */
+        if (xr1 < xr2) {
+            /* CASE 4: Row 1 inside row 2
+             * Order: xl2 < xl1 <= xr1 < xr2
+             * Intervals: [xl2,xl1)={2}, [xl1,xr1)={1,2}, [xr1,xr2)={2} */
+            draw_span_bottom(buf, y + 1, xl2, xl1, color);       /* {2} */
+            draw_dual_row_simple(buf, y, xl1, xr1, color);       /* {1,2} */
+            draw_span_bottom(buf, y + 1, xr1, xr2, color);       /* {2} */
+        } else {
+            /* xr2 <= xr1: Need third comparison for overlap check */
+            if (xl1 <= xr2) {
+                /* CASE 3.1: Overlapping
+                 * Order: xl2 < xl1 <= xr2 <= xr1
+                 * Intervals: [xl2,xl1)={2}, [xl1,xr2)={1,2}, [xr2,xr1)={1} */
+                draw_span_bottom(buf, y + 1, xl2, xl1, color);       /* {2} */
+                draw_dual_row_simple(buf, y, xl1, xr2, color);       /* {1,2} */
+                draw_span_top(buf, y, xr2, xr1, color);              /* {1} */
+            } else {
+                /* CASE 3.2: Disjoint (empty middle)
+                 * Order: xl2 <= xr2 < xl1 <= xr1
+                 * Intervals: [xl2,xr2)={2}, [xr2,xl1)={}, [xl1,xr1)={1} */
+                draw_span_bottom(buf, y + 1, xl2, xr2, color);       /* {2} */
+                /* gap [xr2, xl1) has active set {} - nothing to draw */
+                draw_span_top(buf, y, xl1, xr1, color);              /* {1} */
+            }
         }
     }
 }
@@ -236,20 +371,20 @@ void draw_triangle(unsigned char *buf, int ax, int ay, int bx, int by,
                 int xr2 = (b_on_left ? x_long2 : x_short2) >> 8;
                 if (xl2 > xr2) swap_int(&xl2, &xr2);
 
-                draw_dual_row(buf, y, xl, xr, xl2, xr2, color);
+                draw_dual_row_intervals(buf, y, xl, xr, xl2, xr2, color);
 
                 x_long += dx_ac << 1;
                 x_short += dx_ab << 1;
                 y += 2;
             } else if (((y & 1) == 0) && (y_next >= by)) {
-                /* Single row at even y, use dual row with empty second row */
-                draw_dual_row(buf, y, xl, xr, 0, 0, color);
+                /* Single row at even y - draw top row only */
+                draw_span_top(buf, y, xl, xr, color);
                 x_long += dx_ac;
                 x_short += dx_ab;
                 y++;
             } else {
-                /* Odd y - draw single span */
-                draw_span(buf, y, xl, xr, color);
+                /* Odd y - draw single span on bottom row */
+                draw_span_bottom(buf, y, xl, xr, color);
                 x_long += dx_ac;
                 x_short += dx_ab;
                 y++;
@@ -284,18 +419,20 @@ void draw_triangle(unsigned char *buf, int ax, int ay, int bx, int by,
                 int xr2 = (b_on_left ? x_long2 : x_short2) >> 8;
                 if (xl2 > xr2) swap_int(&xl2, &xr2);
 
-                draw_dual_row(buf, y, xl, xr, xl2, xr2, color);
+                draw_dual_row_intervals(buf, y, xl, xr, xl2, xr2, color);
 
                 x_long += dx_ac << 1;
                 x_short += dx_bc << 1;
                 y += 2;
             } else if (((y & 1) == 0) && (y_next >= cy)) {
-                draw_dual_row(buf, y, xl, xr, 0, 0, color);
+                /* Single row at even y - draw top row only */
+                draw_span_top(buf, y, xl, xr, color);
                 x_long += dx_ac;
                 x_short += dx_bc;
                 y++;
             } else {
-                draw_span(buf, y, xl, xr, color);
+                /* Odd y - draw single span on bottom row */
+                draw_span_bottom(buf, y, xl, xr, color);
                 x_long += dx_ac;
                 x_short += dx_bc;
                 y++;
