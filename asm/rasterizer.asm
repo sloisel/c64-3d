@@ -606,12 +606,6 @@ _dst_start
         lda zp_xr
         lsr a
         sta _dst_full_end
-        ; char_end = (xr + 1) >> 1
-        lda zp_xr
-        clc
-        adc #1
-        lsr a
-        sta _dst_char_end
 
         ; Left partial (if char_start < full_start, i.e., xl is odd)
         lda _dst_char_start
@@ -641,10 +635,10 @@ _dst_full_next
         bne _dst_full_next      ; Always taken (Y < 40)
 
 _dst_right_partial
-        ; Check if xr is odd (full_end < char_end)
-        lda _dst_full_end
-        cmp _dst_char_end
-        bcs _dst_done
+        ; Check if xr is odd (right partial needed)
+        lda zp_xr
+        lsr a
+        bcc _dst_done
         ; RMW with mask $C0 (left pixel only)
         ; Y = full_end
         lda _dst_color_bits
@@ -663,7 +657,6 @@ _dst_color_bits .byte 0
 _dst_char_start .byte 0
 _dst_full_start .byte 0
 _dst_full_end   .byte 0
-_dst_char_end   .byte 0
 _dst_temp       .byte 0
 
 ; ============================================================================
@@ -719,12 +712,6 @@ _dsb_start
         lda zp_xr
         lsr a
         sta _dsb_full_end
-        ; char_end = (xr + 1) >> 1
-        lda zp_xr
-        clc
-        adc #1
-        lsr a
-        sta _dsb_char_end
 
         ; Left partial (if char_start < full_start, i.e., xl is odd)
         lda _dsb_char_start
@@ -754,10 +741,10 @@ _dsb_full_next
         bne _dsb_full_next      ; Always taken (Y < 40)
 
 _dsb_right_partial
-        ; Check if xr is odd (full_end < char_end)
-        lda _dsb_full_end
-        cmp _dsb_char_end
-        bcs _dsb_done
+        ; Check if xr is odd (right partial needed)
+        lda zp_xr
+        lsr a
+        bcc _dsb_done
         ; RMW with mask $0C (left pixel only)
         ; Y = full_end
         lda _dsb_color_bits
@@ -776,7 +763,6 @@ _dsb_color_bits .byte 0
 _dsb_char_start .byte 0
 _dsb_full_start .byte 0
 _dsb_full_end   .byte 0
-_dsb_char_end   .byte 0
 _dsb_temp       .byte 0
 
 ; ============================================================================
@@ -832,12 +818,6 @@ _drs_start
         lda zp_xr
         lsr a
         sta _drs_full_end
-        ; char_end = (xr + 1) >> 1
-        lda zp_xr
-        clc
-        adc #1
-        lsr a
-        sta _drs_char_end
 
         ; Left partial (if char_start < full_start, i.e., xl is odd)
         lda _drs_char_start
@@ -865,10 +845,10 @@ _drs_full_next
         bne _drs_full_next      ; Always taken (Y < 40)
 
 _drs_right_partial
-        ; Check if xr is odd (full_end < char_end)
-        lda _drs_full_end
-        cmp _drs_char_end
-        bcs _drs_done
+        ; Check if xr is odd (right partial needed)
+        lda zp_xr
+        lsr a                   ; carry = xr & 1
+        bcc _drs_done           ; xr even, no right partial
         ; RMW with mask $CC (left pixels only)
         ; Y = full_end
         lda _drs_color_byte
@@ -887,7 +867,6 @@ _drs_color_byte .byte 0
 _drs_char_start .byte 0
 _drs_full_start .byte 0
 _drs_full_end   .byte 0
-_drs_char_end   .byte 0
 _drs_temp       .byte 0
 
 ; ============================================================================
