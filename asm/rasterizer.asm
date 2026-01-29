@@ -479,8 +479,8 @@ _got_endpoints2
         sta zp_xr2
         stx zp_xl2
 +
-        ; Draw dual row
-        jsr draw_dual_row
+        ; Draw dual row using interval-based blitter
+        jsr draw_dual_row_intervals
 
         ; Advance edges by 2 * slope
         ; x_long += dx_ac * 2
@@ -523,18 +523,13 @@ _got_endpoints2
         jmp _trap_loop
 
 _single_even_row
-        ; Even y but no second row available
-        ; Use draw_dual_row with empty second row (xl2 == xr2 == xl)
-        ; Setting xl2=xl ensures _min_xl=_max_xl=xl, so left segment is empty
-        lda zp_xl
-        sta zp_xl2
-        sta zp_xr2              ; xl2 == xr2 means empty span
-        jsr draw_dual_row
+        ; Even y but no second row available - draw top row only
+        jsr draw_span_top
         jmp _advance_one
 
 _odd_scanline
-        ; Odd y: draw single span using set_pixel loop
-        jsr draw_span
+        ; Odd y: draw single span on bottom row
+        jsr draw_span_bottom
 
 _advance_one
         ; Advance edges by one slope
@@ -559,114 +554,30 @@ _advance_one
         jmp _trap_loop
 
 ; ============================================================================
-; ROUTINE: draw_dual_row
+; ROUTINE: draw_span_top
 ; ============================================================================
-; Draw two scanlines at once (dual-row optimization).
-; zp_y is the top scanline (must be even).
+; Draw a horizontal span on a TOP row (y is even).
+; Only modifies top 4 bits of each character byte, preserving bottom row.
+; Assumes all coordinates are on-screen.
 ;
-; Input: zp_y = top scanline (even)
-;        zp_xl, zp_xr = left/right for top row [xl, xr) exclusive
-;        zp_xl2, zp_xr2 = left/right for bottom row [xl2, xr2) exclusive
+; Input: zp_y = scanline (even)
+;        zp_xl = left X (inclusive)
+;        zp_xr = right X (exclusive)
 ;        zp_color = color (0-3)
 ;
 ; Destroys: A, X, Y
 ; ============================================================================
 
-draw_dual_row
-        ; Bounds check: 0 <= y < SCREEN_HEIGHT-1
-        lda zp_y
-        cmp #SCREEN_HEIGHT-1
-        bcc _dual_row_start
-        rts
-_dual_row_start
-
-        ; Clamp x bounds to screen
-        ; xl1 = max(0, xl1)
-        lda zp_xl
-        bpl +
-        lda #0
-        sta zp_xl
-+
-        ; xl2 = max(0, xl2)
-        lda zp_xl2
-        bpl +
-        lda #0
-        sta zp_xl2
-+
-        ; xr1 = min(SCREEN_WIDTH, xr1) - for [xl, xr) exclusive, xr can be 80
-        lda zp_xr
-        cmp #SCREEN_WIDTH+1
-        bcc +
-        lda #SCREEN_WIDTH
-        sta zp_xr
-+
-        ; xr2 = min(SCREEN_WIDTH, xr2)
-        lda zp_xr2
-        cmp #SCREEN_WIDTH+1
-        bcc +
-        lda #SCREEN_WIDTH
-        sta zp_xr2
-+
-        ; Find overall x range (only considering valid rows)
-        ; Row is valid if xl < xr (using [xl, xr) convention)
-        ; x_min = min of valid rows' xl values
-        ; x_max = max of valid rows' xr values
-
-        ; Check which rows are valid
-        ; Top row valid if xl < xr
+draw_span_top
+        ; Early exit if xl >= xr
         lda zp_xl
         cmp zp_xr
-        bcc _top_valid
-        ; Top invalid - use bottom row values only
-        lda zp_xl2
-        sta _x_min
-        lda zp_xr2
-        sta _x_max
-        jmp _x_range_done
-
-_top_valid
-        ; Top valid - check if bottom also valid
-        lda zp_xl2
-        cmp zp_xr2
-        bcc _both_valid
-        ; Only top valid - use top row values
-        lda zp_xl
-        sta _x_min
-        lda zp_xr
-        sta _x_max
-        jmp _x_range_done
-
-_both_valid
-        ; Both rows valid - use min/max
-        lda zp_xl
-        cmp zp_xl2
-        bcc +
-        lda zp_xl2
-+       sta _x_min
-
-        lda zp_xr
-        cmp zp_xr2
-        bcs +
-        lda zp_xr2
-+       sta _x_max
-
-_x_range_done
-
-        ; Character range
-        ; char_start = x_min >> 1
-        lda _x_min
-        lsr a
-        sta zp_char_start
-
-        ; char_end = x_max >> 1 (inclusive)
-        lda _x_max
-        lsr a
-        sta zp_char_end
-
-        ; Compute screen row base address
-        ; base = row_offset[y >> 1] = (y >> 1) * 40
+        bcc _dst_start
+        rts
+_dst_start
+        ; Compute screen row address
         lda zp_y
-        lsr a                   ; char_y = y >> 1
+        lsr a
         tax
         lda row_offset_lo,x
         sta zp_screen_lo
@@ -675,368 +586,94 @@ _x_range_done
         adc #>SCREEN_RAM
         sta zp_screen_hi
 
-        ; Build color pattern byte
+        ; Build color bits for top row: (color << 6) | (color << 4)
         ldx zp_color
-        lda color_pattern,x
-        sta _color_byte
+        lda color_top,x
+        sta _dst_color_bits
 
-        ; ----------------------------------------------------------------
-        ; Compute segment boundaries
-        ; Left segment:  char_start to left_end   (one row active)
-        ; Middle segment: mid_start to mid_end    (both rows fully active)
-        ; Right segment: right_start to char_end  (one row active)
-        ;
-        ; left_end   = (max(xl, xl2) - 1) >> 1   ; last char of left segment
-        ; mid_start  = max(xl, xl2) >> 1         ; first char of middle segment
-        ; mid_end    = min(xr, xr2) >> 1         ; last char of middle segment
-        ; right_start= (min(xr, xr2) + 1) >> 1   ; first char of right segment
-        ; ----------------------------------------------------------------
-
-        ; min(xl, xl2) and max(xl, xl2)
+        ; Compute char ranges
+        ; char_start = xl >> 1
         lda zp_xl
-        cmp zp_xl2
-        bcc _xl_less
-        ; xl >= xl2: min=xl2, max=xl
-        lda zp_xl2
-        sta _min_xl
+        lsr a
+        sta _dst_char_start
+        ; full_start = (xl + 1) >> 1
         lda zp_xl
-        sta _max_xl
-        ; Top row starts later, so bottom row active in left segment
-        lda #$F0                ; inverse mask: clear bottom bits, keep top
-        sta _left_mask
-        jmp _got_xl_minmax
-_xl_less
-        ; xl < xl2: min=xl, max=xl2
-        lda zp_xl
-        sta _min_xl
-        lda zp_xl2
-        sta _max_xl
-        ; Bottom row starts later, so top row active in left segment
-        lda #$0F                ; inverse mask: clear top bits, keep bottom
-        sta _left_mask
-_got_xl_minmax
-        ; xstop = max_xl & 0xFE (round down to even)
-        lda _max_xl
-        and #$FE
-        sta _xstop
-
-        ; Left color: color pattern masked for active row
-        ; If _left_mask = $0F (top active): color_byte & $F0
-        ; If _left_mask = $F0 (bottom active): color_byte & $0F
-        lda _left_mask
-        eor #$FF                ; invert to get the active row mask
-        and _color_byte
-        sta _left_color
-
-        ; min(xr, xr2)
+        clc
+        adc #1
+        lsr a
+        sta _dst_full_start
+        ; full_end = xr >> 1
         lda zp_xr
-        cmp zp_xr2
-        bcc +
-        lda zp_xr2
-+       sta _min_xr
-
-        ; Segment boundaries (from plan):
-        ; mid_start  = max(xl, xl2) >> 1         ; first char of middle segment
-        ; mid_end    = min(xr, xr2) >> 1         ; last char of middle segment
-        ; right_start= (min(xr, xr2) + 1) >> 1   ; first char of right segment
-
-        ; mid_start = max_xl >> 1
-        lda _max_xl
         lsr a
-        sta _mid_start
-
-        ; mid_end = min_xr >> 1
-        lda _min_xr
-        lsr a
-        sta _mid_end
-
-        ; right_start = (min_xr + 1) >> 1
-        lda _min_xr
+        sta _dst_full_end
+        ; char_end = (xr + 1) >> 1
+        lda zp_xr
         clc
         adc #1
         lsr a
-        sta _right_start
+        sta _dst_char_end
 
-        ; Compute "tight" middle range where ALL 4 pixels are set:
-        ; For char C to be fully covered by [xl, xr):
-        ;   both pixels 2*C and 2*C+1 must satisfy xl <= px < xr
-        ; tight_mid_start: need 2*C >= max_xl, so C >= ceil(max_xl/2) = (max_xl+1)>>1
-        ; tight_mid_end: need 2*C+1 < min_xr, so C < (min_xr-1)/2, i.e. C <= (min_xr-2)>>1
-        lda _max_xl
-        clc
-        adc #1
-        lsr a
-        sta _tight_mid_start
-
-        lda _min_xr
-        cmp #2
-        bcc _tight_end_zero     ; min_xr < 2, no tight middle
-        sec
-        sbc #2
-        lsr a
-        sta _tight_mid_end
-        jmp _begin_left_segment
-_tight_end_zero
-        lda #$ff                ; No tight middle
-        sta _tight_mid_end
-
-_begin_left_segment
-        ; ----------------------------------------------------------------
-        ; LEFT SEGMENT (pixel-based iteration)
-        ; x iterates from min(xl,xl2) to max(xl,xl2)
-        ; Only one row is active; use optimized fixed-mask body
-        ; ----------------------------------------------------------------
-
-        ; Initialize pixel position
-        lda _min_xl
-        sta _left_x
-
-        ; FIRST ITERATION (unrolled)
-        ; If x is even, no partial first char - skip to main loop
-        and #1
-        beq _left_segment_main
-
-        ; Handle odd start - run generic body for first partial char
-        lda _left_x
-        lsr a                       ; convert to char position
-        sta zp_char_x
-        jsr _process_char_inner
-        inc _left_x                 ; now x is even
-
-_left_segment_main
-        ; Check if done with main loop
-        lda _left_x
-        cmp _xstop
-        bcs _left_segment_end       ; x >= xstop, exit main loop
-
-        ; Optimized body: one row covers both pixels of this char
-        ; char_x = _left_x >> 1
-        lda _left_x
-        lsr a
-        tay                         ; Y = char column
+        ; Left partial (if char_start < full_start, i.e., xl is odd)
+        lda _dst_char_start
+        cmp _dst_full_start
+        bcs _dst_full_loop
+        ; RMW with mask $30 (right pixel only)
+        tay
+        lda _dst_color_bits
+        and #$30                ; mask to right pixel only
+        sta _dst_temp
         lda (zp_screen_lo),y
-        and _left_mask              ; clear active row bits (keep other row)
-        ora _left_color             ; set color for active row
+        and #$cf                ; ~$30, clear right pixel
+        ora _dst_temp           ; set right pixel with color
         sta (zp_screen_lo),y
 
-        ; Advance by 2 pixels (one char)
-        lda _left_x
-        clc
-        adc #2
-        sta _left_x
-        jmp _left_segment_main
-
-_left_segment_end
-        ; Check if we've reached mid segment
-        lda _left_x
-        cmp _max_xl
-        bcs _middle_segment         ; x >= max_xl, go to middle
-
-        ; Run generic body for transition char
-        lda _left_x
-        lsr a
-        sta zp_char_x
-        jsr _process_char_inner
-        ; Note: we don't need to advance _left_x here since we're done with left segment
-
-        ; ----------------------------------------------------------------
-        ; MIDDLE SEGMENT: mid_start to mid_end
-        ; Edge chars may be partial, tight middle has all 4 pixels
-        ; ----------------------------------------------------------------
-_middle_segment
-        lda _mid_start
-        sta zp_char_x
-
-_middle_loop
-        ; Check if done
-        lda zp_char_x
-        cmp _mid_end
-        beq _middle_process
-        bcs _right_segment
-
-_middle_process
-        ; Check if in tight range (all 4 pixels set)
-        lda zp_char_x
-        cmp _tight_mid_start
-        bcc _middle_partial     ; char_x < tight_start
-        cmp _tight_mid_end
-        beq _middle_direct      ; char_x == tight_end
-        bcs _middle_partial     ; char_x > tight_end
-
-_middle_direct
-        ; Direct write
-        ldy zp_char_x
-        lda _color_byte
-        sta (zp_screen_lo),y
-        inc zp_char_x
-        jmp _middle_loop
-
-_middle_partial
-        ; Partial char - use inner loop
-        jsr _process_char_inner
-        inc zp_char_x
-        jmp _middle_loop
-
-        ; ----------------------------------------------------------------
-        ; RIGHT SEGMENT: right_start to char_end
-        ; ----------------------------------------------------------------
-_right_segment
-        lda _right_start
-        sta zp_char_x
-
-_right_seg_loop
-        lda zp_char_x
-        cmp zp_char_end
-        beq _right_seg_char
-        bcc _right_seg_char
-        jmp _dual_row_done      ; char_x > char_end, done
-
-_right_seg_char
-        ; Process this char using the existing inner loop code
-        jsr _process_char_inner
-        inc zp_char_x
-        jmp _right_seg_loop
-
-; ============================================================================
-; Inner loop processing for a single character (extracted for reuse)
-; Input: zp_char_x = character column to process
-;        zp_screen_lo/hi = row base address
-;        zp_xl, zp_xr, zp_xl2, zp_xr2 = edge positions
-;        _color_byte = color pattern
-; ============================================================================
-_process_char_inner
-        ; Determine pixel coverage for this character
-        ; px_left = char_x << 1
-        ; px_right = (char_x << 1) + 1
-        lda zp_char_x
-        asl a
-        sta _px_left
-        ora #1
-        sta _px_right
-
-        ; Top row coverage (bits 1=left, 0=right in top_bits)
-        ; Using [xl, xr) convention: pixel x covered if xl <= x < xr
-        ; top_left = (px_left >= xl && px_left < xr) ? 1 : 0
-        ; top_right = (px_right >= xl && px_right < xr) ? 1 : 0
-        ; top_bits = (top_left << 1) | top_right
-
-        lda #0
-        sta _top_bits
-
-        ; Check left pixel of top row: px_left >= xl && px_left < xr
-        lda _px_left
-        cmp zp_xl
-        bcc _tl_skip            ; px_left < xl, not covered
-        cmp zp_xr
-        bcs _tl_skip            ; px_left >= xr, not covered
-        lda _top_bits
-        ora #2                  ; Set left bit
-        sta _top_bits
-_tl_skip
-
-        ; Check right pixel of top row: px_right >= xl && px_right < xr
-        lda _px_right
-        cmp zp_xl
-        bcc _tr_skip
-        cmp zp_xr
-        bcs _tr_skip            ; px_right >= xr, not covered
-        lda _top_bits
-        ora #1                  ; Set right bit
-        sta _top_bits
-_tr_skip
-
-        ; Bottom row coverage
-        lda #0
-        sta _bot_bits
-
-        ; Check left pixel of bottom row: px_left >= xl2 && px_left < xr2
-        lda _px_left
-        cmp zp_xl2
-        bcc _bl_skip
-        cmp zp_xr2
-        bcs _bl_skip            ; px_left >= xr2, not covered
-        lda _bot_bits
-        ora #2
-        sta _bot_bits
-_bl_skip
-
-        ; Check right pixel of bottom row: px_right >= xl2 && px_right < xr2
-        lda _px_right
-        cmp zp_xl2
-        bcc _br_skip
-        cmp zp_xr2
-        bcs _br_skip            ; px_right >= xr2, not covered
-        lda _bot_bits
-        ora #1
-        sta _bot_bits
-_br_skip
-        ; Build mask
-        ldx _top_bits
-        lda top_row_mask,x
-        ldx _bot_bits
-        ora bottom_row_mask,x
-        sta _set_mask
-
-        ; Skip if no pixels to set
-        beq _process_char_done
-
-        ; Calculate screen offset
-        ldy zp_char_x
-
-        ; If all 4 pixels, just write
-        lda _set_mask
-        cmp #$ff
-        bne _read_modify_write
-
-        ; Full character: direct write
-        lda _color_byte
-        sta (zp_screen_lo),y
-        rts                     ; Return from _process_char_inner
-
-_read_modify_write
-        ; Partial: read-modify-write
+_dst_full_loop
+        ldy _dst_full_start
+_dst_full_next
+        cpy _dst_full_end
+        bcs _dst_right_partial
+        ; RMW with mask $F0 (both pixels)
         lda (zp_screen_lo),y
-        eor _color_byte         ; XOR with color
-        and _set_mask           ; Keep only bits we're changing
-        eor (zp_screen_lo),y    ; XOR back to get final value
+        and #$0f                ; ~$F0
+        ora _dst_color_bits
+        sta (zp_screen_lo),y
+        iny
+        bne _dst_full_next      ; Always taken (Y < 40)
+
+_dst_right_partial
+        ; Check if xr is odd (full_end < char_end)
+        lda _dst_full_end
+        cmp _dst_char_end
+        bcs _dst_done
+        ; RMW with mask $C0 (left pixel only)
+        ; Y = full_end
+        lda _dst_color_bits
+        and #$c0                ; mask to left pixel only
+        sta _dst_temp
+        lda (zp_screen_lo),y
+        and #$3f                ; ~$C0, clear left pixel
+        ora _dst_temp           ; set left pixel with color
         sta (zp_screen_lo),y
 
-_process_char_done
-        rts                     ; Return from _process_char_inner
-
-_dual_row_done
+_dst_done
         rts
 
-; Temporaries for draw_dual_row
-_x_min          .byte 0
-_x_max          .byte 0
-_px_left        .byte 0
-_px_right       .byte 0
-_top_bits       .byte 0
-_bot_bits       .byte 0
-_set_mask       .byte 0
-_color_byte     .byte 0
-; Segment boundaries
-_min_xl         .byte 0         ; min(xl, xl2) - pixel position
-_max_xl         .byte 0         ; max(xl, xl2) - pixel position
-_min_xr         .byte 0         ; min(xr, xr2)
-_xstop          .byte 0         ; max(xl, xl2) & 0xFE - end of left main loop
-_left_x         .byte 0         ; current pixel position in left segment
-_mid_start      .byte 0         ; first char of middle segment
-_mid_end        .byte 0         ; last char of middle segment
-_right_start    .byte 0         ; first char of right segment
-_tight_mid_start .byte 0        ; first char with all 4 pixels set
-_tight_mid_end  .byte 0         ; last char with all 4 pixels set
-_left_mask      .byte 0         ; $0F (top active) or $F0 (bottom active) - inverse mask
-_left_color     .byte 0         ; color byte masked for active row in left segment
+; Temporaries for draw_span_top
+_dst_color_bits .byte 0
+_dst_char_start .byte 0
+_dst_full_start .byte 0
+_dst_full_end   .byte 0
+_dst_char_end   .byte 0
+_dst_temp       .byte 0
 
 ; ============================================================================
-; ROUTINE: draw_span
+; ROUTINE: draw_span_bottom
 ; ============================================================================
-; Draw a horizontal span on a single scanline (pixel by pixel).
-; Used for odd scanlines where dual-row optimization doesn't apply.
+; Draw a horizontal span on a BOTTOM row (y is odd).
+; Only modifies bottom 4 bits of each character byte, preserving top row.
+; Assumes all coordinates are on-screen.
 ;
-; Input: zp_y = scanline
+; Input: zp_y = scanline (odd)
 ;        zp_xl = left X (inclusive)
 ;        zp_xr = right X (exclusive)
 ;        zp_color = color (0-3)
@@ -1044,28 +681,502 @@ _left_color     .byte 0         ; color byte masked for active row in left segme
 ; Destroys: A, X, Y
 ; ============================================================================
 
-draw_span
-        ; For each x from xl to xr [xl, xr) exclusive, call set_pixel_v2
+draw_span_bottom
+        ; Early exit if xl >= xr
         lda zp_xl
-        sta _span_x
-
-_span_loop
-        lda _span_x
         cmp zp_xr
-        bcs _span_done          ; x >= xr, done
-        ; Set pixel at (x, y)
-        ldx _span_x
-        ldy zp_y
-        lda zp_color
-        jsr set_pixel_v2
+        bcc _dsb_start
+        rts
+_dsb_start
+        ; Compute screen row address (same char row as y-1 for odd y)
+        lda zp_y
+        lsr a
+        tax
+        lda row_offset_lo,x
+        sta zp_screen_lo
+        lda row_offset_hi,x
+        clc
+        adc #>SCREEN_RAM
+        sta zp_screen_hi
 
-        inc _span_x
-        jmp _span_loop
+        ; Build color bits for bottom row: (color << 2) | color
+        ldx zp_color
+        lda color_bottom,x
+        sta _dsb_color_bits
 
-_span_done
+        ; Compute char ranges (same as draw_span_top)
+        ; char_start = xl >> 1
+        lda zp_xl
+        lsr a
+        sta _dsb_char_start
+        ; full_start = (xl + 1) >> 1
+        lda zp_xl
+        clc
+        adc #1
+        lsr a
+        sta _dsb_full_start
+        ; full_end = xr >> 1
+        lda zp_xr
+        lsr a
+        sta _dsb_full_end
+        ; char_end = (xr + 1) >> 1
+        lda zp_xr
+        clc
+        adc #1
+        lsr a
+        sta _dsb_char_end
+
+        ; Left partial (if char_start < full_start, i.e., xl is odd)
+        lda _dsb_char_start
+        cmp _dsb_full_start
+        bcs _dsb_full_loop
+        ; RMW with mask $03 (right pixel only)
+        tay
+        lda _dsb_color_bits
+        and #$03                ; mask to right pixel only
+        sta _dsb_temp
+        lda (zp_screen_lo),y
+        and #$fc                ; ~$03, clear right pixel
+        ora _dsb_temp           ; set right pixel with color
+        sta (zp_screen_lo),y
+
+_dsb_full_loop
+        ldy _dsb_full_start
+_dsb_full_next
+        cpy _dsb_full_end
+        bcs _dsb_right_partial
+        ; RMW with mask $0F (both pixels)
+        lda (zp_screen_lo),y
+        and #$f0                ; ~$0F
+        ora _dsb_color_bits
+        sta (zp_screen_lo),y
+        iny
+        bne _dsb_full_next      ; Always taken (Y < 40)
+
+_dsb_right_partial
+        ; Check if xr is odd (full_end < char_end)
+        lda _dsb_full_end
+        cmp _dsb_char_end
+        bcs _dsb_done
+        ; RMW with mask $0C (left pixel only)
+        ; Y = full_end
+        lda _dsb_color_bits
+        and #$0c                ; mask to left pixel only
+        sta _dsb_temp
+        lda (zp_screen_lo),y
+        and #$f3                ; ~$0C, clear left pixel
+        ora _dsb_temp           ; set left pixel with color
+        sta (zp_screen_lo),y
+
+_dsb_done
         rts
 
-_span_x .byte 0
+; Temporaries for draw_span_bottom
+_dsb_color_bits .byte 0
+_dsb_char_start .byte 0
+_dsb_full_start .byte 0
+_dsb_full_end   .byte 0
+_dsb_char_end   .byte 0
+_dsb_temp       .byte 0
+
+; ============================================================================
+; ROUTINE: draw_dual_row_simple
+; ============================================================================
+; Draw both rows on interval [xl, xr) where BOTH rows are fully active.
+; y is the top scanline (must be even).
+; This is much simpler than the general case - no per-row boundary logic.
+;
+; Input: zp_y = scanline (even)
+;        zp_xl = left X (inclusive)
+;        zp_xr = right X (exclusive)
+;        zp_color = color (0-3)
+;
+; Destroys: A, X, Y
+; ============================================================================
+
+draw_dual_row_simple
+        ; Early exit if xl >= xr
+        lda zp_xl
+        cmp zp_xr
+        bcc _drs_start
+        rts
+_drs_start
+        ; Compute screen row address
+        lda zp_y
+        lsr a
+        tax
+        lda row_offset_lo,x
+        sta zp_screen_lo
+        lda row_offset_hi,x
+        clc
+        adc #>SCREEN_RAM
+        sta zp_screen_hi
+
+        ; Build full color pattern
+        ldx zp_color
+        lda color_pattern,x
+        sta _drs_color_byte
+
+        ; Compute char ranges
+        ; char_start = xl >> 1
+        lda zp_xl
+        lsr a
+        sta _drs_char_start
+        ; full_start = (xl + 1) >> 1
+        lda zp_xl
+        clc
+        adc #1
+        lsr a
+        sta _drs_full_start
+        ; full_end = xr >> 1
+        lda zp_xr
+        lsr a
+        sta _drs_full_end
+        ; char_end = (xr + 1) >> 1
+        lda zp_xr
+        clc
+        adc #1
+        lsr a
+        sta _drs_char_end
+
+        ; Left partial (if char_start < full_start, i.e., xl is odd)
+        lda _drs_char_start
+        cmp _drs_full_start
+        bcs _drs_full_loop
+        ; RMW with mask $33 (right pixels only)
+        tay
+        lda _drs_color_byte
+        and #$33                ; mask to right pixels only
+        sta _drs_temp
+        lda (zp_screen_lo),y
+        and #$cc                ; ~$33, clear right pixels
+        ora _drs_temp           ; set right pixels with color
+        sta (zp_screen_lo),y
+
+_drs_full_loop
+        ldy _drs_full_start
+        lda _drs_color_byte     ; Load color pattern once
+_drs_full_next
+        cpy _drs_full_end
+        bcs _drs_right_partial
+        ; Direct write - no masking needed for full chars!
+        sta (zp_screen_lo),y
+        iny
+        bne _drs_full_next      ; Always taken (Y < 40)
+
+_drs_right_partial
+        ; Check if xr is odd (full_end < char_end)
+        lda _drs_full_end
+        cmp _drs_char_end
+        bcs _drs_done
+        ; RMW with mask $CC (left pixels only)
+        ; Y = full_end
+        lda _drs_color_byte
+        and #$cc                ; Keep only left pixel bits
+        sta _drs_temp
+        lda (zp_screen_lo),y
+        and #$33                ; ~$CC
+        ora _drs_temp
+        sta (zp_screen_lo),y
+
+_drs_done
+        rts
+
+; Temporaries for draw_dual_row_simple
+_drs_color_byte .byte 0
+_drs_char_start .byte 0
+_drs_full_start .byte 0
+_drs_full_end   .byte 0
+_drs_char_end   .byte 0
+_drs_temp       .byte 0
+
+; ============================================================================
+; ROUTINE: draw_dual_row_intervals
+; ============================================================================
+; Interval-based dual-row blitter using decision tree.
+; y is the top scanline (must be even).
+; xl1, xr1: interval for row 1 (top row, y)
+; xl2, xr2: interval for row 2 (bottom row, y+1)
+;
+; Uses 2-3 comparisons to determine ordering, then calls appropriate
+; blitter (single-row or dual-row) for each interval.
+;
+; Input: zp_y = top scanline (even)
+;        zp_xl, zp_xr = top row interval [xl1, xr1)
+;        zp_xl2, zp_xr2 = bottom row interval [xl2, xr2)
+;        zp_color = color (0-3)
+;
+; Destroys: A, X, Y
+; ============================================================================
+
+draw_dual_row_intervals
+        ; Save original y for restoration
+        lda zp_y
+        sta _dri_saved_y
+
+        ; Handle empty rows first
+        ; Check if row 1 empty (xl >= xr)
+        lda zp_xl
+        cmp zp_xr
+        bcc _dri_row1_valid
+        ; Row 1 empty, check row 2
+        lda zp_xl2
+        cmp zp_xr2
+        bcc +                   ; Row 2 valid, draw it
+        rts                     ; Both empty, return
++
+        ; Only row 2: draw_span_bottom(y+1, xl2, xr2)
+        ; Need to set up zp_xl/xr from xl2/xr2, and y = y+1
+        inc zp_y                ; y+1 for bottom row
+        lda zp_xl2
+        sta zp_xl
+        lda zp_xr2
+        sta zp_xr
+        jsr draw_span_bottom
+        jmp _dri_restore_y
+
+_dri_row1_valid
+        ; Row 1 valid, check row 2
+        lda zp_xl2
+        cmp zp_xr2
+        bcc _dri_both_valid
+        ; Only row 1: draw_span_top(y, xl1, xr1)
+        jmp draw_span_top
+
+_dri_both_valid
+        ; Both rows valid - use decision tree
+        ; Compare xl1 vs xl2
+        lda zp_xl               ; xl1
+        cmp zp_xl2              ; xl2
+        beq _dri_xl1_le_xl2     ; xl1 == xl2
+        bcc _dri_xl1_le_xl2     ; xl1 < xl2
+        jmp _dri_xl2_less       ; xl1 > xl2 (so xl2 < xl1)
+_dri_xl1_le_xl2
+        ; xl1 <= xl2
+        ; Compare xr2 vs xr1
+        lda zp_xr2              ; xr2
+        cmp zp_xr               ; xr1
+        beq _dri_case1          ; xr2 == xr1
+        bcs _dri_xr2_gt_xr1     ; xr2 > xr1
+        ; xr2 < xr1: CASE 1
+_dri_case1
+        ; CASE 1: Row 2 inside row 1
+        ; Order: xl1 <= xl2 <= xr2 <= xr1
+        ; Intervals: [xl1,xl2)={1}, [xl2,xr2)={1,2}, [xr2,xr1)={1}
+
+        ; Save xr1 for third segment
+        lda zp_xr
+        sta _dri_saved_xr1
+
+        ; First: draw_span_top(y, xl1, xl2)
+        lda zp_xl2
+        sta zp_xr               ; xr = xl2
+        jsr draw_span_top
+
+        ; Second: draw_dual_row_simple(y, xl2, xr2)
+        lda zp_xl2
+        sta zp_xl               ; xl = xl2
+        lda zp_xr2
+        sta zp_xr               ; xr = xr2
+        jsr draw_dual_row_simple
+
+        ; Third: draw_span_top(y, xr2, xr1)
+        lda zp_xr2
+        sta zp_xl               ; xl = xr2
+        lda _dri_saved_xr1
+        sta zp_xr               ; xr = xr1
+        jmp draw_span_top
+
+_dri_xr2_gt_xr1
+        ; xr2 > xr1: need third comparison for overlap check
+        ; Compare xl2 vs xr1
+        lda zp_xl2              ; xl2
+        cmp zp_xr               ; xr1
+        beq _dri_case2_1        ; xl2 == xr1 (overlapping at boundary)
+        bcs _dri_case2_2        ; xl2 > xr1 (disjoint)
+        ; xl2 < xr1: CASE 2.1 (overlapping)
+_dri_case2_1
+        ; CASE 2.1: Overlapping
+        ; Order: xl1 <= xl2 <= xr1 <= xr2
+        ; Intervals: [xl1,xl2)={1}, [xl2,xr1)={1,2}, [xr1,xr2)={2}
+
+        ; Save xr1, xr2 for later segments
+        lda zp_xr
+        sta _dri_saved_xr1
+        lda zp_xr2
+        sta _dri_saved_xr2
+
+        ; First: draw_span_top(y, xl1, xl2)
+        lda zp_xl2
+        sta zp_xr               ; xr = xl2
+        jsr draw_span_top
+
+        ; Second: draw_dual_row_simple(y, xl2, xr1)
+        lda zp_xl2
+        sta zp_xl               ; xl = xl2
+        lda _dri_saved_xr1
+        sta zp_xr               ; xr = xr1
+        jsr draw_dual_row_simple
+
+        ; Third: draw_span_bottom(y+1, xr1, xr2)
+        inc zp_y                ; y+1 for bottom row
+        lda _dri_saved_xr1
+        sta zp_xl               ; xl = xr1
+        lda _dri_saved_xr2
+        sta zp_xr               ; xr = xr2
+        jsr draw_span_bottom
+        jmp _dri_restore_y
+
+_dri_case2_2
+        ; CASE 2.2: Disjoint (empty middle)
+        ; Order: xl1 <= xr1 < xl2 <= xr2
+        ; Intervals: [xl1,xr1)={1}, [xr1,xl2)={}, [xl2,xr2)={2}
+
+        ; Save xl2, xr2 for second segment
+        lda zp_xl2
+        sta _dri_saved_xl2
+        lda zp_xr2
+        sta _dri_saved_xr2
+
+        ; First: draw_span_top(y, xl1, xr1)
+        jsr draw_span_top
+
+        ; Second: draw_span_bottom(y+1, xl2, xr2)
+        inc zp_y                ; y+1 for bottom row
+        lda _dri_saved_xl2
+        sta zp_xl               ; xl = xl2
+        lda _dri_saved_xr2
+        sta zp_xr               ; xr = xr2
+        jsr draw_span_bottom
+        jmp _dri_restore_y
+
+_dri_xl2_less
+        ; xl2 < xl1
+        ; Compare xr1 vs xr2
+        lda zp_xr               ; xr1
+        cmp zp_xr2              ; xr2
+        bcs _dri_xr2_le_xr1     ; xr2 <= xr1
+        ; xr1 < xr2: CASE 4
+_dri_case4
+        ; CASE 4: Row 1 inside row 2
+        ; Order: xl2 < xl1 <= xr1 < xr2
+        ; Intervals: [xl2,xl1)={2}, [xl1,xr1)={1,2}, [xr1,xr2)={2}
+
+        ; Save xl1, xr1, xr2 for later segments
+        lda zp_xl
+        sta _dri_saved_xl1
+        lda zp_xr
+        sta _dri_saved_xr1
+        lda zp_xr2
+        sta _dri_saved_xr2
+
+        ; First: draw_span_bottom(y+1, xl2, xl1)
+        inc zp_y                ; y+1 for bottom row
+        lda zp_xl2
+        sta zp_xl               ; xl = xl2
+        lda _dri_saved_xl1
+        sta zp_xr               ; xr = xl1
+        jsr draw_span_bottom
+
+        ; Second: draw_dual_row_simple(y, xl1, xr1)
+        dec zp_y                ; back to y for dual row
+        lda _dri_saved_xl1
+        sta zp_xl               ; xl = xl1
+        lda _dri_saved_xr1
+        sta zp_xr               ; xr = xr1
+        jsr draw_dual_row_simple
+
+        ; Third: draw_span_bottom(y+1, xr1, xr2)
+        inc zp_y                ; y+1 for bottom row
+        lda _dri_saved_xr1
+        sta zp_xl               ; xl = xr1
+        lda _dri_saved_xr2
+        sta zp_xr               ; xr = xr2
+        jsr draw_span_bottom
+        jmp _dri_restore_y
+
+_dri_xr2_le_xr1
+        ; xr2 <= xr1: need third comparison for overlap check
+        ; Compare xl1 vs xr2
+        lda zp_xl               ; xl1
+        cmp zp_xr2              ; xr2
+        beq _dri_case3_1        ; xl1 == xr2 (overlapping at boundary)
+        bcs _dri_case3_2        ; xl1 > xr2 (disjoint)
+        ; xl1 < xr2: CASE 3.1 (overlapping)
+_dri_case3_1
+        ; CASE 3.1: Overlapping
+        ; Order: xl2 < xl1 <= xr2 <= xr1
+        ; Intervals: [xl2,xl1)={2}, [xl1,xr2)={1,2}, [xr2,xr1)={1}
+
+        ; Save xl1, xr1, xr2 for later segments
+        lda zp_xl
+        sta _dri_saved_xl1
+        lda zp_xr
+        sta _dri_saved_xr1
+        lda zp_xr2
+        sta _dri_saved_xr2
+
+        ; First: draw_span_bottom(y+1, xl2, xl1)
+        inc zp_y                ; y+1 for bottom row
+        lda zp_xl2
+        sta zp_xl               ; xl = xl2
+        lda _dri_saved_xl1
+        sta zp_xr               ; xr = xl1
+        jsr draw_span_bottom
+
+        ; Second: draw_dual_row_simple(y, xl1, xr2)
+        dec zp_y                ; back to y for dual row
+        lda _dri_saved_xl1
+        sta zp_xl               ; xl = xl1
+        lda _dri_saved_xr2
+        sta zp_xr               ; xr = xr2
+        jsr draw_dual_row_simple
+
+        ; Third: draw_span_top(y, xr2, xr1)
+        lda _dri_saved_xr2
+        sta zp_xl               ; xl = xr2
+        lda _dri_saved_xr1
+        sta zp_xr               ; xr = xr1
+        jmp draw_span_top
+
+_dri_case3_2
+        ; CASE 3.2: Disjoint (empty middle)
+        ; Order: xl2 <= xr2 < xl1 <= xr1
+        ; Intervals: [xl2,xr2)={2}, [xr2,xl1)={}, [xl1,xr1)={1}
+
+        ; Save xl1, xr1 for second segment
+        lda zp_xl
+        sta _dri_saved_xl1
+        lda zp_xr
+        sta _dri_saved_xr1
+
+        ; First: draw_span_bottom(y+1, xl2, xr2)
+        inc zp_y                ; y+1 for bottom row
+        lda zp_xl2
+        sta zp_xl               ; xl = xl2
+        lda zp_xr2
+        sta zp_xr               ; xr = xr2
+        jsr draw_span_bottom
+
+        ; Second: draw_span_top(y, xl1, xr1)
+        dec zp_y                ; back to y for top row
+        lda _dri_saved_xl1
+        sta zp_xl               ; xl = xl1
+        lda _dri_saved_xr1
+        sta zp_xr               ; xr = xr1
+        jmp draw_span_top
+
+_dri_restore_y
+        lda _dri_saved_y
+        sta zp_y
+        rts
+
+; Temporaries for draw_dual_row_intervals
+_dri_saved_y    .byte 0
+_dri_saved_xl1  .byte 0
+_dri_saved_xr1  .byte 0
+_dri_saved_xl2  .byte 0
+_dri_saved_xr2  .byte 0
 
 ; ============================================================================
 ; ROUTINE: set_pixel_v2
@@ -1238,6 +1349,20 @@ color_pattern
         .byte $55               ; Color 1: %01010101
         .byte $aa               ; Color 2: %10101010
         .byte $ff               ; Color 3: %11111111
+
+; Color patterns for top row only: (c<<6) | (c<<4)
+color_top
+        .byte $00               ; Color 0
+        .byte $50               ; Color 1
+        .byte $a0               ; Color 2
+        .byte $f0               ; Color 3
+
+; Color patterns for bottom row only: (c<<2) | c
+color_bottom
+        .byte $00               ; Color 0
+        .byte $05               ; Color 1
+        .byte $0a               ; Color 2
+        .byte $0f               ; Color 3
 
 ; Pixel shift amounts for set_pixel
 ; Index = sub_y*2 + sub_x: TL=0, TR=1, BL=2, BR=3
