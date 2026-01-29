@@ -265,12 +265,12 @@ tic
         lda #>tic_irq_handler
         sta $0315
 
-        ; Set raster line $80 for interrupt
+        ; Set raster line 0 for interrupt
         lda $d011
         and #$7f                ; Clear bit 8 of raster compare
         sta $d011
-        lda #$80
-        sta $d012               ; Raster line $80
+        lda #$00
+        sta $d012               ; Raster line 0
 
         ; Enable raster interrupt
         lda #$01
