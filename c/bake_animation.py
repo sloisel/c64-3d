@@ -374,48 +374,65 @@ def fix_winding(frames, indices):
     print(f"Fixed winding on {fixed_count} faces")
     return fixed_indices
 
-def zdepth_quintile_colors(positions, indices):
-    """Color faces by Z-depth quintiles (front to back).
+def normal_shading_colors(positions, indices):
+    """Color faces based on face normal dot product with light direction.
 
-    Quintiles 1,2 (front) -> color 1
-    Quintile 3 (middle) -> color 2
-    Quintiles 4,5 (back) -> color 3
+    Light direction: [0, 1, -1] normalized (from above and in front).
+    Computes outward-pointing normal for each face, normalizes it,
+    and colors based on dot product with light:
+    - dot < -0.33: color 1 (dark, facing away from light)
+    - -0.33 <= dot <= 0.33: color 2 (medium)
+    - dot > 0.33: color 3 (light, facing toward light)
     """
+    import math
     num_faces = len(indices) // 3
+    face_colors = []
 
-    # Compute centroid Z for each face
-    face_z = []
+    # Light direction: [0, 1, 1] normalized (from above and behind)
+    inv_sqrt2 = 1.0 / math.sqrt(2.0)
+    light_y = inv_sqrt2
+    light_z = inv_sqrt2
+
     for f in range(num_faces):
         i, j, k = indices[f*3], indices[f*3+1], indices[f*3+2]
-        cz = (positions[i][2] + positions[j][2] + positions[k][2]) / 3
-        face_z.append((cz, f))
 
-    # Sort by Z (front to back, assuming -Z is front)
-    face_z.sort()
+        # Get vertices
+        a = positions[i]
+        b = positions[j]
+        c = positions[k]
 
-    # Assign quintiles
-    face_colors = [0] * num_faces
-    faces_per_quintile = num_faces // 5
-    remainder = num_faces % 5
+        # Compute edge vectors
+        ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+        ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]
 
-    # Quintile boundaries
-    boundaries = []
-    pos = 0
-    for q in range(5):
-        extra = 1 if q < remainder else 0
-        boundaries.append(pos + faces_per_quintile + extra)
-        pos = boundaries[-1]
+        # Cross product: normal = ab × ac
+        nx = ab[1] * ac[2] - ab[2] * ac[1]
+        ny = ab[2] * ac[0] - ab[0] * ac[2]
+        nz = ab[0] * ac[1] - ab[1] * ac[0]
 
-    # Assign colors: Q1,Q2 -> 1, Q3 -> 2, Q4,Q5 -> 3
-    for rank, (z, f) in enumerate(face_z):
-        if rank < boundaries[1]:  # Q1 or Q2
-            face_colors[f] = 1
-        elif rank < boundaries[2]:  # Q3
-            face_colors[f] = 2
-        else:  # Q4 or Q5
-            face_colors[f] = 3
+        # Normalize
+        length = math.sqrt(nx*nx + ny*ny + nz*nz)
+        if length > 0:
+            ny = ny / length
+            nz = nz / length
+        else:
+            ny = 0
+            nz = 0
 
-    print(f"Z-depth quintile coloring: front(Q1,Q2)->1, middle(Q3)->2, back(Q4,Q5)->3")
+        # Dot product with light direction [0, light_y, light_z]
+        dot = ny * light_y + nz * light_z
+
+        # Color based on dot product
+        if dot < -0.5:
+            face_colors.append(1)  # dark, facing away from light
+        elif dot > 0.0:
+            face_colors.append(3)  # light, facing toward light
+        else:
+            face_colors.append(2)  # medium
+
+    # Count colors
+    counts = [face_colors.count(c) for c in [1, 2, 3]]
+    print(f"Normal shading: {counts[0]} dark, {counts[1]} medium, {counts[2]} light")
     return face_colors
 
 def export_assembly(frames, indices, output_path):
@@ -428,7 +445,7 @@ def export_assembly(frames, indices, output_path):
     indices = fix_winding(frames, indices)
 
     # Generate Z-depth quintile colors based on first frame positions
-    face_colors = zdepth_quintile_colors(frames[0], indices)
+    face_colors = normal_shading_colors(frames[0], indices)
 
     # Split faces into two sub-meshes
     split = num_faces // 2
