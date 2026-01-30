@@ -771,10 +771,10 @@ vic2_init
         lda #0
         sta $d020           ; border black
         sta $d021           ; background (color %00)
-        lda #11
-        sta $d022           ; color %01 dark grey
         lda #12
-        sta $d023           ; color %10 medium grey
+        sta $d022           ; color %01 medium grey
+        lda #15
+        sta $d023           ; color %10 light grey
 
         ; Fill color RAM with white + multicolor
         lda #9
