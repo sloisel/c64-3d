@@ -15,15 +15,15 @@
 ; $2A00-$2BFF: sqr_hi (512 bytes)
 ; $2C00-$2CFF: negsqr_lo (256 bytes)
 ; $2D00-$2DFF: negsqr_hi (256 bytes)
-; $2E00-$2E3F: recip_lo (64 bytes)
-; $2E40-$2E7F: recip_hi (64 bytes)
-; $2E80-$2EFF: recip_persp (128 bytes) - perspective reciprocal (128-255)
-; $2F00-$30FF: smult_sq1_lo (512 bytes)
-; $3100-$32FF: smult_sq1_hi (512 bytes)
-; $3300-$34FF: smult_sq2_lo (512 bytes)
-; $3500-$36FF: smult_sq2_hi (512 bytes)
+; $2E00-$2EFF: recip_persp (256 bytes) - perspective reciprocal (direct z8 index)
+; $2F00-$30FF: smult_sq1_lo (512 bytes) - MUST be page-aligned
+; $3100-$32FF: smult_sq1_hi (512 bytes) - MUST be page-aligned
+; $3300-$34FF: smult_sq2_lo (512 bytes) - MUST be page-aligned
+; $3500-$36FF: smult_sq2_hi (512 bytes) - MUST be page-aligned
 ; $3700-$37FF: smult_eorx (256 bytes)
-; $3800+:      Code + test data
+; $3800-$383F: recip_lo (64 bytes)
+; $3840-$387F: recip_hi (64 bytes)
+; $3880+:      Code + test data
 ; (After code): rcos (256 bytes), rsin (256 bytes) - rotation tables
 
         .include "macros.asm"
@@ -33,9 +33,9 @@
 ; ============================================================================
         * = $0801
 
-; BASIC: 10 SYS14336 (=$3800)
+; BASIC: 10 SYS14464 (=$3880)
         .word (+), 10
-        .null $9e, "14336"
+        .null $9e, "14464"
 +       .word 0
 
 ; Padding to $2000
@@ -88,40 +88,25 @@ negsqr_hi
             .byte >(((256-n)*(256-n))/4 - 1)
         .endfor
 
-; Reciprocal tables for division: recip[n] = floor(65536/n)
-        * = $2e00
-recip_lo
-        .byte 0                 ; [0] undefined
-        .for n = 1, n < 64, n += 1
-            .byte <(65536/n)
-        .endfor
-
-        * = $2e40
-recip_hi
-        .byte 0                 ; [0] undefined
-        .for n = 1, n < 64, n += 1
-            .byte >(65536/n)
-        .endfor
-
 ; Perspective reciprocal table for 3D projection
-; Table starts at z8=128 (indices 0-127 map to z8 128-255)
-; recip_persp[z8-128] = 8192 / z8 for z8 = 128..255
-; z8 = world_z >> 3 (k=3 shift parameter)
-; For pz=1500, z8 ≈ 187, giving recip ≈ 44
-; screen_offset = highbyte(world_x * recip)
-; Usage: index = (world_z >> 3) - 128, then recip_persp[index]
-; Note: z8 < 128 indicates object too close - handle separately
-        * = $2e80
+; 256-entry table indexed directly by z8 (no subtraction needed)
+; recip_persp[z8] = 4096 / z8 for z8 = 17..255
+; z8 = world_z >> 1 (k=1 shift parameter for wider FOV)
+; screen_offset = highbyte(world_x * recip) = 32 * world_x / world_z
+; Note: z8 < 17 would overflow 8 bits, entries 0-16 are invalid (set to 0)
+        * = $2e00
 recip_persp
-        .for i = 0, i < 128, i += 1
-            ; z8 = i + 128 (values 128-255)
-            .byte (8192 / (i + 128))
+        .for i = 0, i < 256, i += 1
+            .if i < 17
+                .byte 0         ; invalid (would overflow)
+            .else
+                .byte (4096 / i)
+            .endif
         .endfor
-
-; Padding to next page
-        * = $2f00
 
 ; Signed multiplication tables (smult11 style)
+; IMPORTANT: These must be page-aligned ($xx00) for self-modifying code
+        * = $2f00
 smult_sq1_lo
         .for i = -256, i <= 254, i += 1
             .byte <((i*i)/4)
@@ -155,10 +140,26 @@ smult_eorx
             .byte i ^ 128
         .endfor
 
-; ============================================================================
-; CODE starts at $3800
-; ============================================================================
+; Reciprocal tables for division: recip[n] = floor(65536/n)
+; Placed after smult tables to avoid alignment conflicts
         * = $3800
+recip_lo
+        .byte 0                 ; [0] undefined
+        .for n = 1, n < 64, n += 1
+            .byte <(65536/n)
+        .endfor
+
+        * = $3840
+recip_hi
+        .byte 0                 ; [0] undefined
+        .for n = 1, n < 64, n += 1
+            .byte >(65536/n)
+        .endfor
+
+; ============================================================================
+; CODE starts at $3880
+; ============================================================================
+        * = $3880
 
 ; ----------------------------------------------------------------------------
 ; Zero page allocations
@@ -625,7 +626,7 @@ init_octahedron
         lda #2
         sta mesh_fcol_0+7
 
-        ; Transform parameters: px=0, py=-25, pz=1500, theta=20
+        ; Transform parameters: px=0, py=-25, pz=256, theta=20
         lda #0
         sta mesh_px_lo
         sta mesh_px_hi
@@ -635,9 +636,9 @@ init_octahedron
         lda #>(-25)
         sta mesh_py_hi
 
-        lda #<1500
+        lda #<256
         sta mesh_pz_lo
-        lda #>1500
+        lda #>256
         sta mesh_pz_hi
 
         lda #20
@@ -851,10 +852,10 @@ _ig_faces1
         sta mesh_py_lo
         sta mesh_py_hi
 
-        ; pz = 1370 (s16) = $055A
-        lda #<1370
+        ; pz = 200 (s16) = $00C8
+        lda #<200
         sta mesh_pz_lo
-        lda #>1370
+        lda #>200
         sta mesh_pz_hi
 
         ; theta = 20

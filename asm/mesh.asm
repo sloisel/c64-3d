@@ -315,36 +315,20 @@ _tm_z_ok
         ; recip = recip_persp[z8 - 128]
         ; ----------------------------------------------------------------
 
-        ; Compute z8 = world_z >> 3
-        ; world_z is 16-bit, we want bits 10..3 (high bits of low byte + low bits of high byte)
-        lda zp_world_z_lo
-        lsr a
-        lsr a
-        lsr a                   ; A = world_z_lo >> 3
-        sta zp_z8
+        ; Compute z8 = world_z >> 1 (k=1 shift for wider FOV)
+        ; This is a simple 16-bit right shift by 1
         lda zp_world_z_hi
-        asl a
-        asl a
-        asl a
-        asl a
-        asl a                   ; A = (world_z_hi & 7) << 5
-        ora zp_z8
-        sta zp_z8               ; z8 = ((world_z_hi & 7) << 5) | (world_z_lo >> 3)
+        lsr a                   ; Carry = bit 0 of high byte
+        lda zp_world_z_lo
+        ror a                   ; A = (carry << 7) | (lo >> 1) = z8
+        sta zp_z8
 
-        ; Actually, let me simplify: z8 = world_z >> 3 means dividing by 8
-        ; For 16-bit shift: result_lo = (hi << 5) | (lo >> 3)
-        ; But for pz=1500 ($5DC), z >> 3 = 187 ($BB)
-        ; High byte = 5, low byte = $DC
-        ; (5 << 5) | ($DC >> 3) = $A0 | $1B = $BB = 187. Correct!
-
-        ; Check z8 >= 128 (required for table)
+        ; Check z8 >= 17 (below this, recip would overflow 8 bits)
         lda zp_z8
-        cmp #128
-        bcc _tm_too_close       ; z8 < 128, object too close
+        cmp #17
+        bcc _tm_too_close       ; z8 < 17, object too close
 
-        ; Look up reciprocal: index = z8 - 128
-        sec
-        sbc #128
+        ; Look up reciprocal: direct index by z8
         tax
         lda recip_persp,x
         sta zp_recip

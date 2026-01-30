@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>C64 3D - Spinning Octahedron</title>
+    <title>C64 3D Rasterizer</title>
     <style>
         * {
             margin: 0;
@@ -51,13 +51,46 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            cursor: pointer;
             border-radius: 8px;
         }
-        #start-overlay:hover {
-            background: #1a1a1a;
+        .demo-selector {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 30px;
         }
-        #start-overlay .play-btn {
+        .demo-btn {
+            padding: 12px 24px;
+            background: #222;
+            border: 2px solid #444;
+            color: #888;
+            font-size: 1em;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .demo-btn:hover {
+            background: #2a2a2a;
+            border-color: #555;
+            color: #aaa;
+        }
+        .demo-btn.selected {
+            background: #1a3a5a;
+            border-color: #6bf;
+            color: #6bf;
+        }
+        .play-area {
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .play-area:hover .play-btn {
+            border-color: #8df;
+        }
+        .play-area:hover .label {
+            color: #8df;
+        }
+        .play-btn {
             width: 80px;
             height: 80px;
             border: 3px solid #6bf;
@@ -66,8 +99,9 @@
             align-items: center;
             justify-content: center;
             margin-bottom: 20px;
+            transition: border-color 0.2s;
         }
-        #start-overlay .play-btn::after {
+        .play-btn::after {
             content: '';
             width: 0;
             height: 0;
@@ -76,11 +110,12 @@
             border-left: 30px solid #6bf;
             margin-left: 8px;
         }
-        #start-overlay .label {
+        .label {
             color: #6bf;
             font-size: 1.2em;
+            transition: color 0.2s;
         }
-        #start-overlay .hint {
+        .hint {
             color: #666;
             font-size: 0.8em;
             margin-top: 10px;
@@ -102,21 +137,43 @@
     <p class="subtitle">Real-time 3D on a 1MHz 6502</p>
 
     <div id="game-container">
-        <div id="start-overlay" onclick="startEmulator()">
-            <div class="play-btn"></div>
-            <div class="label">Click to Play</div>
-            <div class="hint">Commodore 64 emulator will start</div>
+        <div id="start-overlay">
+            <div class="demo-selector">
+                <button class="demo-btn selected" onclick="selectDemo('octa', this)">Octahedron</button>
+                <button class="demo-btn" onclick="selectDemo('zombie', this)">Zombie</button>
+            </div>
+            <div class="play-area" onclick="startEmulator()">
+                <div class="play-btn"></div>
+                <div class="label">Click to Play</div>
+                <div class="hint">Commodore 64 emulator will start</div>
+            </div>
         </div>
         <div id="game"></div>
     </div>
 
-    <p class="info">
+    <p class="info" id="demo-info">
         Spinning octahedron rendered in real-time on a Commodore 64.<br>
         80x50 chunky pixels, triple-buffered, with backface culling and painter's algorithm sorting.<br>
         <a href="https://github.com/sloisel/c64-3d">Source code on GitHub</a>
     </p>
 
     <script>
+        var selectedDemo = 'octa';
+
+        var demoInfo = {
+            'octa': 'Spinning octahedron rendered in real-time on a Commodore 64.<br>80x50 chunky pixels, triple-buffered, with backface culling and painter\'s algorithm sorting.',
+            'zombie': 'Animated zombie with 295 triangles and 24-frame skeletal animation.<br>80x50 chunky pixels, triple-buffered, with backface culling and painter\'s algorithm sorting.'
+        };
+
+        function selectDemo(demo, btn) {
+            selectedDemo = demo;
+            // Update button states
+            document.querySelectorAll('.demo-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            // Update info text
+            document.getElementById('demo-info').innerHTML = demoInfo[demo] + '<br><a href="https://github.com/sloisel/c64-3d">Source code on GitHub</a>';
+        }
+
         function startEmulator() {
             // Hide the overlay
             document.getElementById('start-overlay').style.display = 'none';
@@ -124,7 +181,7 @@
             // Configure EmulatorJS
             window.EJS_player = '#game';
             window.EJS_core = 'vice_x64sc';
-            window.EJS_gameUrl = 'asm/octa.prg?v=2';
+            window.EJS_gameUrl = 'asm/' + selectedDemo + '.prg?v=3';
             window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
             window.EJS_startOnLoaded = true;
 
