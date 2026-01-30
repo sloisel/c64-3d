@@ -25,6 +25,14 @@ DUAL_MESH = 1
 FLIP_ZSORT = 1
 .endweak
 
+; XOR value for signed-to-unsigned conversion in radix sort
+; $80 = normal order (back-to-front), $7f = reversed (front-to-back)
+.if FLIP_ZSORT
+SORT_XOR = $7f
+.else
+SORT_XOR = $80
+.endif
+
 ; ============================================================================
 ; Zero page allocations for mesh transform
 ; ============================================================================
@@ -221,13 +229,7 @@ _tm_do_vertex
         sta _tm_rot_z
 
         ; Store rot_z for painter's algorithm sorting
-        ; If FLIP_ZSORT=1, negate to reverse sort order
         ldx zp_vtx_idx
-.if FLIP_ZSORT
-        eor #$ff
-        clc
-        adc #1
-.endif
         sta mesh_rot_z,x
 
         ; ----------------------------------------------------------------
@@ -614,7 +616,7 @@ _sf0_count_loop
         lda mesh_fi_0,x
         tay
         lda mesh_rot_z,y
-        eor #$80
+        eor #SORT_XOR
         tay
         lda radix_count,y
         clc
@@ -665,7 +667,7 @@ _sf0_scatter_loop
         lda mesh_fi_0,x
         tay
         lda mesh_rot_z,y
-        eor #$80
+        eor #SORT_XOR
         tay
         lda radix_count,y
         sta sf_pos_temp
@@ -711,7 +713,7 @@ _sf1_count_loop
         lda mesh_fi_1,x
         tay
         lda mesh_rot_z,y
-        eor #$80
+        eor #SORT_XOR
         tay
         lda radix_count,y
         clc
@@ -762,7 +764,7 @@ _sf1_scatter_loop
         lda mesh_fi_1,x
         tay
         lda mesh_rot_z,y
-        eor #$80
+        eor #SORT_XOR
         tay
         lda radix_count,y
         sta sf_pos_temp
