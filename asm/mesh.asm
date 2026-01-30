@@ -13,6 +13,15 @@
 ; Requires: main.asm (for math routines, LUTs)
 ;           rasterizer.asm (for draw_triangle)
 ;           macros.asm (for mul8x8_signed_m)
+;
+; Configuration:
+;   DUAL_MESH = 1 : Two sub-meshes with merge-sort render (up to 512 faces)
+;   DUAL_MESH = 0 : Single mesh, simpler/faster (up to 256 faces)
+;
+; Set DUAL_MESH before including this file, or default to 1
+.weak
+DUAL_MESH = 1
+.endweak
 
 ; ============================================================================
 ; Zero page allocations for mesh transform
@@ -776,7 +785,8 @@ _sf1_scatter_done
 ; ============================================================================
 
 render_mesh
-        ; Sort both sub-meshes
+.if DUAL_MESH
+        ; === DUAL MESH MODE: Sort both sub-meshes and merge-render ===
         jsr sort_faces_0
         jsr sort_faces_1
 
@@ -866,6 +876,26 @@ _rm_only_1
 
 _rm_done
         rts
+
+.else
+        ; === SINGLE MESH MODE: Sort and render directly (faster) ===
+        jsr sort_faces_0
+
+        ; Simple loop through sorted faces
+        ldx #0
+_rm_single_loop
+        cpx mesh_num_faces_0
+        bcs _rm_single_done
+        lda face_order_0,x
+        stx _rm_idx_0           ; Save loop counter
+        jsr _rm_draw_face_0
+        ldx _rm_idx_0           ; Restore loop counter
+        inx
+        jmp _rm_single_loop
+
+_rm_single_done
+        rts
+.endif
 
 ; Helper: draw face from sub-mesh 0
 ; Input: A = face index in sub-mesh 0

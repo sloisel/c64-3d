@@ -42,19 +42,16 @@ void clear_screen(unsigned char *buf, unsigned char color);
 void draw_triangle(unsigned char *buf, int ax, int ay, int bx, int by,
                    int cx, int cy, unsigned char color);
 
-/* Save screen buffer to a raw binary file */
-void save_screen(const unsigned char *buf, const char *filename);
-
-/* Load screen buffer from a raw binary file */
-void load_screen(unsigned char *buf, const char *filename);
-
-/* Print screen to terminal with ANSI colors */
-void print_screen(const unsigned char *buf);
-
 /* Set a single chunky pixel (for reference rasterizer) */
 void set_pixel(unsigned char *buf, int x, int y, unsigned char color);
 
 /* Get a single chunky pixel value */
 unsigned char get_pixel(const unsigned char *buf, int x, int y);
+
+/* Save screen buffer to a raw binary file */
+void save_screen(const unsigned char *buf, const char *filename);
+
+/* Load screen buffer from a raw binary file */
+void load_screen(unsigned char *buf, const char *filename);
 
 #endif /* RASTERIZE_H */

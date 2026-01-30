@@ -1,46 +1,39 @@
-# Makefile for C64 Math Library
+# Makefile for C64 3D Rasterizer
 #
 # Usage:
-#   make              - Build math_test.prg
-#   make test         - Run tests (requires VICE not occupied by vice-mcp)
-#   make test-launch  - Launch fresh VICE instance and run tests
+#   make              - Build both octa.prg and zombie.prg
+#   make octa.prg     - Build octahedron demo
+#   make zombie.prg   - Build zombie/grunt demo
 #   make clean        - Remove build artifacts
+#   make run-octa     - Run octahedron in VICE
+#   make run-zombie   - Run zombie in VICE
 
 ASM = 64tass
 ASMFLAGS = -Wall
 
-.PHONY: all clean test test-launch
+SOURCES = main.asm rasterizer.asm mesh.asm math.asm macros.asm grunt_anim.asm grunt_data.asm
 
-all: math_test.prg chunky_test.prg
+.PHONY: all clean run-octa run-zombie debug-octa debug-zombie
 
-math_test.prg: math_test.asm math.asm macros.asm
-	$(ASM) $(ASMFLAGS) -o $@ -l math_test.lst $<
+all: octa.prg zombie.prg
 
-chunky_test.prg: chunky_test.asm vic2.asm macros.asm demo.bin
-	$(ASM) $(ASMFLAGS) -o $@ -l chunky_test.lst $<
+octa.prg: $(SOURCES)
+	$(ASM) $(ASMFLAGS) -D GRUNT_MESH=0 -o $@ main.asm
 
-# Generate demo.bin from C rasterizer
-demo.bin:
-	cd ../c && ./test --demo && cp demo.bin ../asm/
-
-# Run tests against existing VICE instance
-# NOTE: vice-mcp must be disconnected first, or use test-launch instead
-test: math_test.prg
-	@echo "Running tests against VICE at localhost:6502..."
-	@echo "(If vice-mcp is connected, disconnect it first or use 'make test-launch')"
-	python3 vice_test.py --prg math_test.prg
-
-# Launch a fresh VICE instance on alternate port for testing
-test-launch: math_test.prg
-	@echo "Launching VICE on port 6503 for testing..."
-	python3 vice_test.py --launch --port 6503 --prg math_test.prg
+zombie.prg: $(SOURCES)
+	$(ASM) $(ASMFLAGS) -D GRUNT_MESH=1 -o $@ main.asm
 
 clean:
-	rm -f *.prg *.lst
+	rm -f *.lst
 
-# Convenience targets
-run: math_test.prg
+run-octa: octa.prg
 	x64sc $<
 
-debug: math_test.prg
+run-zombie: zombie.prg
+	x64sc $<
+
+debug-octa: octa.prg
+	x64sc -binarymonitor -binarymonitoraddress ip4://127.0.0.1:6502 $<
+
+debug-zombie: zombie.prg
 	x64sc -binarymonitor -binarymonitoraddress ip4://127.0.0.1:6502 $<

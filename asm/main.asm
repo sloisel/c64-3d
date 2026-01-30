@@ -242,6 +242,12 @@ PIXEL_BL_SHIFT  = 2
 PIXEL_BR_SHIFT  = 0
 
 ; ============================================================================
+; Build configuration: define GRUNT_MESH=1 for zombie, 0 for octahedron
+; Use: 64tass -D GRUNT_MESH=1 -o zombie.prg main.asm
+;      64tass -D GRUNT_MESH=0 -o octa.prg main.asm
+; ============================================================================
+
+; ============================================================================
 ; Main entry point
 ; ============================================================================
 main
@@ -254,8 +260,12 @@ main
         ; Initialize triple buffering
         jsr triple_buf_init
 
-        ; Initialize grunt mesh data
+        ; Initialize mesh data
+.if GRUNT_MESH
         jsr init_grunt
+.else
+        jsr init_octahedron
+.endif
 
         ; Animation loop
 _anim_loop
@@ -269,7 +279,7 @@ _anim_loop
         lda #0
         jsr clear_screen
 
-        ; Draw octahedron
+        ; Draw mesh
         jsr draw_octahedron
 
         ; Queue page flip: the buffer we just drew becomes the next to display
@@ -285,8 +295,10 @@ _anim_loop
         adc #10
         sta mesh_theta
 
-        ; Advance animation frame
+.if GRUNT_MESH
+        ; Advance animation frame (grunt only)
         jsr advance_grunt_frame
+.endif
 
         jmp _anim_loop
 
@@ -459,429 +471,6 @@ patch_screen_base
         rts
 
 ; ============================================================================
-; tic - Start raster-based timing
-; Sets up raster interrupt at line $80 that increments counter
-; ============================================================================
-tic
-        sei                     ; Disable interrupts
-
-        ; Initialize counter to $FF (-1, so first interrupt makes it 0)
-        lda #$ff
-        sta tic_counter
-
-        ; Save old IRQ vector
-        lda $0314
-        sta tic_old_irq
-        lda $0315
-        sta tic_old_irq+1
-
-        ; Disable CIA-1 interrupts (so only VIC generates IRQs)
-        lda #%01111111
-        sta $dc0d
-
-        ; Acknowledge pending CIA interrupts
-        sta $dc0d
-        sta $dd0d
-
-        ; Set up our IRQ handler
-        lda #<tic_irq_handler
-        sta $0314
-        lda #>tic_irq_handler
-        sta $0315
-
-        ; Set raster line 0 for interrupt
-        lda $d011
-        and #$7f                ; Clear bit 8 of raster compare
-        sta $d011
-        lda #$00
-        sta $d012               ; Raster line 0
-
-        ; Enable raster interrupt
-        lda #$01
-        sta $d01a               ; Enable raster IRQ
-
-        ; Acknowledge any pending VIC IRQ
-        asl $d019
-
-        cli                     ; Enable interrupts
-
-        ; Wait for first interrupt (counter goes from $FF to $00)
--       lda tic_counter
-        bne -
-        rts
-
-tic_irq_handler
-        ; Increment counter
-        inc tic_counter
-
-        ; Acknowledge VIC interrupt (ASL clears the interrupt flag)
-        asl $d019
-
-        ; Jump to KERNAL register restore and RTI
-        jmp $ea81
-
-; ============================================================================
-; read_raster - Read 9-bit raster position reliably
-; Returns: A = high bit (0 or $80), X = low byte
-; ============================================================================
-read_raster
--       lda $d011
-        and #$80                ; A = hi1
-        ldx $d012               ; X = lo
-        cmp $d011 - $70         ; Compare with hi2 (weird addressing to keep same mask)
-        ; Actually, re-read and mask properly:
-        pha                     ; Save hi1
-        lda $d011
-        and #$80                ; A = hi2
-        sta _rr_hi2
-        pla                     ; A = hi1
-        cmp _rr_hi2
-        bne -                   ; hi1 != hi2, retry
-        rts
-_rr_hi2 .byte 0
-
-; ============================================================================
-; toc - Stop timing and capture raster position
-; Reads counter, raster, counter until stable. Stores result.
-; ============================================================================
-toc
-_toc_retry
-        lda tic_counter         ; Read counter1
-        sta _toc_counter1
-        jsr read_raster         ; Read raster (A=hi, X=lo)
-        sta _toc_raster_hi
-        stx _toc_raster_lo
-        lda tic_counter         ; Read counter2
-        cmp _toc_counter1       ; Same as counter1?
-        bne _toc_retry          ; No, retry
-
-        ; Stable read - save results
-        sta toc_counter
-        lda _toc_raster_hi
-        sta toc_raster_hi
-        lda _toc_raster_lo
-        sta toc_raster_lo
-
-        ; Disable raster interrupt
-        sei
-        lda #$00
-        sta $d01a
-
-        ; Restore old IRQ vector
-        lda tic_old_irq
-        sta $0314
-        lda tic_old_irq+1
-        sta $0315
-
-        cli
-        rts
-
-; Temporaries for toc
-_toc_counter1   .byte 0
-_toc_raster_hi  .byte 0
-_toc_raster_lo  .byte 0
-
-; Timing results (public)
-tic_counter     .byte 0
-tic_old_irq     .word 0
-toc_counter     .byte 0         ; Frame count
-toc_raster_hi   .byte 0         ; Raster high bit (0 or $80)
-toc_raster_lo   .byte 0         ; Raster low byte
-
-; ============================================================================
-; draw_demo_cube - Draw the test cube
-; ============================================================================
-draw_demo_cube
-        ; Boundary test cube: x: 0-80, y: 0-50
-        ; Triangle 1: C, p100, p110 = (40,25), (80,37), (40,50) color 1
-        lda #40
-        sta zp_ax
-        lda #25
-        sta zp_ay
-        lda #80
-        sta zp_bx
-        lda #37
-        sta zp_by
-        lda #40
-        sta zp_cx
-        lda #50
-        sta zp_cy
-        lda #1
-        sta zp_color
-        jsr draw_triangle
-
-        ; Triangle 2: C, p110, p010 = (40,25), (40,50), (0,37) color 1
-        lda #40
-        sta zp_ax
-        lda #25
-        sta zp_ay
-        lda #40
-        sta zp_bx
-        lda #50
-        sta zp_by
-        lda #0
-        sta zp_cx
-        lda #37
-        sta zp_cy
-        lda #1
-        sta zp_color
-        jsr draw_triangle
-
-        ; Triangle 3: C, p001, p101 = (40,25), (40,0), (80,13) color 2
-        lda #40
-        sta zp_ax
-        lda #25
-        sta zp_ay
-        lda #40
-        sta zp_bx
-        lda #0
-        sta zp_by
-        lda #80
-        sta zp_cx
-        lda #13
-        sta zp_cy
-        lda #2
-        sta zp_color
-        jsr draw_triangle
-
-        ; Triangle 4: C, p101, p100 = (40,25), (80,13), (80,37) color 2
-        lda #40
-        sta zp_ax
-        lda #25
-        sta zp_ay
-        lda #80
-        sta zp_bx
-        lda #13
-        sta zp_by
-        lda #80
-        sta zp_cx
-        lda #37
-        sta zp_cy
-        lda #2
-        sta zp_color
-        jsr draw_triangle
-
-        ; Triangle 5: C, p010, p011 = (40,25), (0,37), (0,13) color 3
-        lda #40
-        sta zp_ax
-        lda #25
-        sta zp_ay
-        lda #0
-        sta zp_bx
-        lda #37
-        sta zp_by
-        lda #0
-        sta zp_cx
-        lda #13
-        sta zp_cy
-        lda #3
-        sta zp_color
-        jsr draw_triangle
-
-        ; Triangle 6: C, p011, p001 = (40,25), (0,13), (40,0) color 3
-        lda #40
-        sta zp_ax
-        lda #25
-        sta zp_ay
-        lda #0
-        sta zp_bx
-        lda #13
-        sta zp_by
-        lda #40
-        sta zp_cx
-        lda #0
-        sta zp_cy
-        lda #3
-        sta zp_color
-        jsr draw_triangle
-
-        rts
-
-; ============================================================================
-; init_octahedron - Initialize octahedron mesh data
-; ============================================================================
-; Sets up the mesh_* variables with octahedron vertex and face data.
-; Same parameters as C test: vertices +-120, pz=1500, py=-25, theta=20
-init_octahedron
-        ; ----------------------------------------------------------------
-        ; Octahedron vertices: 6 points rotated 30° in XY plane
-        ; cos(30)=0.866, sin(30)=0.5
-        ; 0: was +X (120,0,0) -> (104, 60, 0)
-        ; 1: was -X (-120,0,0) -> (-104, -60, 0)
-        ; 2: was +Y (0,120,0) -> (-60, 104, 0)
-        ; 3: was -Y (0,-120,0) -> (60, -104, 0)
-        ; 4: +Z (0, 0, 120) unchanged
-        ; 5: -Z (0, 0, -120) unchanged
-        ; ----------------------------------------------------------------
-        lda #6
-        sta mesh_num_verts
-
-        ; Vertex 0: was +X -> (104, 60, 0)
-        lda #104
-        sta mesh_vx+0
-        lda #60
-        sta mesh_vy+0
-        lda #0
-        sta mesh_vz+0
-
-        ; Vertex 1: was -X -> (-104, -60, 0)
-        lda #<(-104)
-        sta mesh_vx+1
-        lda #<(-60)
-        sta mesh_vy+1
-        lda #0
-        sta mesh_vz+1
-
-        ; Vertex 2: was +Y -> (-60, 104, 0)
-        lda #<(-60)
-        sta mesh_vx+2
-        lda #104
-        sta mesh_vy+2
-        lda #0
-        sta mesh_vz+2
-
-        ; Vertex 3: was -Y -> (60, -104, 0)
-        lda #60
-        sta mesh_vx+3
-        lda #<(-104)
-        sta mesh_vy+3
-        lda #0
-        sta mesh_vz+3
-
-        ; Vertex 4: +Z (unchanged)
-        lda #0
-        sta mesh_vx+4
-        sta mesh_vy+4
-        lda #120
-        sta mesh_vz+4
-
-        ; Vertex 5: -Z (unchanged)
-        lda #0
-        sta mesh_vx+5
-        sta mesh_vy+5
-        lda #<(-120)
-        sta mesh_vz+5
-
-        ; ----------------------------------------------------------------
-        ; Octahedron faces: 8 triangles with CCW winding
-        ; Split into two sub-meshes (4 faces each) for dual-mesh sorting
-        ; Sub-mesh 0: faces 0-3 (upper hemisphere)
-        ; Sub-mesh 1: faces 4-7 (lower hemisphere)
-        ; ----------------------------------------------------------------
-        lda #4
-        sta mesh_num_faces_0
-        sta mesh_num_faces_1
-
-        ; === Sub-mesh 0: Upper hemisphere ===
-
-        ; Face 0: i=0, j=4, k=3 (Upper: +X, +Z, -Y)
-        lda #0
-        sta mesh_fi_0+0
-        lda #4
-        sta mesh_fj_0+0
-        lda #3
-        sta mesh_fk_0+0
-        lda #1
-        sta mesh_fcol_0+0
-
-        ; Face 1: i=1, j=3, k=4 (Upper: -X, -Y, +Z)
-        lda #1
-        sta mesh_fi_0+1
-        lda #3
-        sta mesh_fj_0+1
-        lda #4
-        sta mesh_fk_0+1
-        lda #2
-        sta mesh_fcol_0+1
-
-        ; Face 2: i=0, j=3, k=5 (Upper: +X, -Y, -Z)
-        lda #0
-        sta mesh_fi_0+2
-        lda #3
-        sta mesh_fj_0+2
-        lda #5
-        sta mesh_fk_0+2
-        lda #3
-        sta mesh_fcol_0+2
-
-        ; Face 3: i=1, j=5, k=3 (Upper: -X, -Z, -Y)
-        lda #1
-        sta mesh_fi_0+3
-        lda #5
-        sta mesh_fj_0+3
-        lda #3
-        sta mesh_fk_0+3
-        lda #1
-        sta mesh_fcol_0+3
-
-        ; === Sub-mesh 1: Lower hemisphere ===
-
-        ; Face 4: i=0, j=2, k=4 (Lower: +X, +Y, +Z)
-        lda #0
-        sta mesh_fi_1+0
-        lda #2
-        sta mesh_fj_1+0
-        lda #4
-        sta mesh_fk_1+0
-        lda #2
-        sta mesh_fcol_1+0
-
-        ; Face 5: i=1, j=4, k=2 (Lower: -X, +Z, +Y)
-        lda #1
-        sta mesh_fi_1+1
-        lda #4
-        sta mesh_fj_1+1
-        lda #2
-        sta mesh_fk_1+1
-        lda #3
-        sta mesh_fcol_1+1
-
-        ; Face 6: i=0, j=5, k=2 (Lower: +X, -Z, +Y)
-        lda #0
-        sta mesh_fi_1+2
-        lda #5
-        sta mesh_fj_1+2
-        lda #2
-        sta mesh_fk_1+2
-        lda #1
-        sta mesh_fcol_1+2
-
-        ; Face 7: i=1, j=2, k=5 (Lower: -X, +Y, -Z)
-        lda #1
-        sta mesh_fi_1+3
-        lda #2
-        sta mesh_fj_1+3
-        lda #5
-        sta mesh_fk_1+3
-        lda #2
-        sta mesh_fcol_1+3
-
-        ; ----------------------------------------------------------------
-        ; Transform parameters: px=0, py=-25, pz=1500, theta=20
-        ; ----------------------------------------------------------------
-        lda #0
-        sta mesh_px_lo
-        sta mesh_px_hi
-
-        ; py = -25 (s16) = $FFE7
-        lda #<(-25)             ; $E7
-        sta mesh_py_lo
-        lda #>(-25)             ; $FF
-        sta mesh_py_hi
-
-        ; pz = 1500 (s16) = $05DC
-        lda #<1500              ; $DC
-        sta mesh_pz_lo
-        lda #>1500              ; $05
-        sta mesh_pz_hi
-
-        ; theta = 20
-        lda #20
-        sta mesh_theta
-
-        rts
-
-; ============================================================================
 ; draw_octahedron - Transform and render the octahedron
 ; ============================================================================
 draw_octahedron
@@ -891,6 +480,171 @@ draw_octahedron
         jsr render_mesh
 _do_err
         rts
+
+; ============================================================================
+; init_octahedron - Initialize octahedron mesh data (8 faces, 6 vertices)
+; ============================================================================
+.if !GRUNT_MESH
+init_octahedron
+        ; Octahedron vertices: 6 points
+        ; 0: +X (104, 60, 0)   1: -X (-104, -60, 0)
+        ; 2: +Y (-60, 104, 0)  3: -Y (60, -104, 0)
+        ; 4: +Z (0, 0, 120)    5: -Z (0, 0, -120)
+        lda #6
+        sta mesh_num_verts
+
+        ; Vertex 0: (104, 60, 0)
+        lda #104
+        sta mesh_vx+0
+        lda #60
+        sta mesh_vy+0
+        lda #0
+        sta mesh_vz+0
+
+        ; Vertex 1: (-104, -60, 0)
+        lda #<(-104)
+        sta mesh_vx+1
+        lda #<(-60)
+        sta mesh_vy+1
+        lda #0
+        sta mesh_vz+1
+
+        ; Vertex 2: (-60, 104, 0)
+        lda #<(-60)
+        sta mesh_vx+2
+        lda #104
+        sta mesh_vy+2
+        lda #0
+        sta mesh_vz+2
+
+        ; Vertex 3: (60, -104, 0)
+        lda #60
+        sta mesh_vx+3
+        lda #<(-104)
+        sta mesh_vy+3
+        lda #0
+        sta mesh_vz+3
+
+        ; Vertex 4: (0, 0, 120)
+        lda #0
+        sta mesh_vx+4
+        sta mesh_vy+4
+        lda #120
+        sta mesh_vz+4
+
+        ; Vertex 5: (0, 0, -120)
+        lda #0
+        sta mesh_vx+5
+        sta mesh_vy+5
+        lda #<(-120)
+        sta mesh_vz+5
+
+        ; 8 faces (all in mesh_0 for single-mesh mode)
+        lda #8
+        sta mesh_num_faces_0
+        lda #0
+        sta mesh_num_faces_1
+
+        ; Face 0: i=0, j=4, k=3, color=1
+        lda #0
+        sta mesh_fi_0+0
+        lda #4
+        sta mesh_fj_0+0
+        lda #3
+        sta mesh_fk_0+0
+        lda #1
+        sta mesh_fcol_0+0
+
+        ; Face 1: i=1, j=3, k=4, color=2
+        lda #1
+        sta mesh_fi_0+1
+        lda #3
+        sta mesh_fj_0+1
+        lda #4
+        sta mesh_fk_0+1
+        lda #2
+        sta mesh_fcol_0+1
+
+        ; Face 2: i=0, j=3, k=5, color=3
+        lda #0
+        sta mesh_fi_0+2
+        lda #3
+        sta mesh_fj_0+2
+        lda #5
+        sta mesh_fk_0+2
+        lda #3
+        sta mesh_fcol_0+2
+
+        ; Face 3: i=1, j=5, k=3, color=1
+        lda #1
+        sta mesh_fi_0+3
+        lda #5
+        sta mesh_fj_0+3
+        lda #3
+        sta mesh_fk_0+3
+        lda #1
+        sta mesh_fcol_0+3
+
+        ; Face 4: i=0, j=2, k=4, color=2
+        lda #0
+        sta mesh_fi_0+4
+        lda #2
+        sta mesh_fj_0+4
+        lda #4
+        sta mesh_fk_0+4
+        lda #2
+        sta mesh_fcol_0+4
+
+        ; Face 5: i=1, j=4, k=2, color=3
+        lda #1
+        sta mesh_fi_0+5
+        lda #4
+        sta mesh_fj_0+5
+        lda #2
+        sta mesh_fk_0+5
+        lda #3
+        sta mesh_fcol_0+5
+
+        ; Face 6: i=0, j=5, k=2, color=1
+        lda #0
+        sta mesh_fi_0+6
+        lda #5
+        sta mesh_fj_0+6
+        lda #2
+        sta mesh_fk_0+6
+        lda #1
+        sta mesh_fcol_0+6
+
+        ; Face 7: i=1, j=2, k=5, color=2
+        lda #1
+        sta mesh_fi_0+7
+        lda #2
+        sta mesh_fj_0+7
+        lda #5
+        sta mesh_fk_0+7
+        lda #2
+        sta mesh_fcol_0+7
+
+        ; Transform parameters: px=0, py=-25, pz=1500, theta=20
+        lda #0
+        sta mesh_px_lo
+        sta mesh_px_hi
+
+        lda #<(-25)
+        sta mesh_py_lo
+        lda #>(-25)
+        sta mesh_py_hi
+
+        lda #<1500
+        sta mesh_pz_lo
+        lda #>1500
+        sta mesh_pz_hi
+
+        lda #20
+        sta mesh_theta
+
+        rts
+.endif
 
 ; ============================================================================
 ; mul8x8_init - Initialize multiplication table pointers
@@ -991,6 +745,7 @@ cycle_count_hi  .byte 0
 ; Include rasterizer and mesh rendering
 ; ============================================================================
         .include "rasterizer.asm"
+DUAL_MESH = GRUNT_MESH          ; 1 = dual-mesh for grunt (295 faces), 0 = single for octahedron (8 faces)
         .include "mesh.asm"
 
 ; ============================================================================
@@ -1031,116 +786,6 @@ vic2_init
         bne -
 
         rts
-
-; ============================================================================
-; Compare screen RAM with expected data
-; ============================================================================
-compare_screen
-        lda #0
-        sta $02
-        sta $03
-        lda #$ff
-        sta $04
-        sta $05
-
-        ldx #0
-_cmp_loop0
-        lda $0400,x
-        cmp octa_expected,x
-        beq _cmp0_next
-        inc $02
-        bne _cmp0_rec
-        inc $03
-_cmp0_rec
-        lda $04
-        cmp #$ff
-        bne _cmp0_next
-        stx $04
-        lda #0
-        sta $05
-_cmp0_next
-        inx
-        cpx #250
-        bne _cmp_loop0
-
-        ldx #0
-_cmp_loop1
-        lda $0400+250,x
-        cmp octa_expected+250,x
-        beq _cmp1_next
-        inc $02
-        bne _cmp1_rec
-        inc $03
-_cmp1_rec
-        lda $04
-        cmp #$ff
-        bne _cmp1_next
-        txa
-        clc
-        adc #250
-        sta $04
-        lda #0
-        adc #0
-        sta $05
-_cmp1_next
-        inx
-        cpx #250
-        bne _cmp_loop1
-
-        ldx #0
-_cmp_loop2
-        lda $0400+500,x
-        cmp octa_expected+500,x
-        beq _cmp2_next
-        inc $02
-        bne _cmp2_rec
-        inc $03
-_cmp2_rec
-        lda $04
-        cmp #$ff
-        bne _cmp2_next
-        txa
-        clc
-        adc #<500
-        sta $04
-        lda #0
-        adc #>500
-        sta $05
-_cmp2_next
-        inx
-        cpx #250
-        bne _cmp_loop2
-
-        ldx #0
-_cmp_loop3
-        lda $0400+750,x
-        cmp octa_expected+750,x
-        beq _cmp3_next
-        inc $02
-        bne _cmp3_rec
-        inc $03
-_cmp3_rec
-        lda $04
-        cmp #$ff
-        bne _cmp3_next
-        txa
-        clc
-        adc #<750
-        sta $04
-        lda #0
-        adc #>750
-        sta $05
-_cmp3_next
-        inx
-        cpx #250
-        bne _cmp_loop3
-
-        rts
-
-; ============================================================================
-; Expected octahedron output
-; ============================================================================
-        .include "octa_expected.asm"
 
 ; ============================================================================
 ; Grunt mesh data (151 vertices, 295 faces split 147+148, 16 animation frames)
