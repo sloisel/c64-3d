@@ -289,10 +289,10 @@ _anim_loop
         ; Advance to next draw buffer (0 -> 1 -> 2 -> 0)
         jsr advance_draw_buffer
 
-        ; Increment theta by 10 (faster rotation)
+        ; Increment theta
         lda mesh_theta
         clc
-        adc #10
+        adc #3
         sta mesh_theta
 
 .if GRUNT_MESH
