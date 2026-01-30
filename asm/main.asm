@@ -788,7 +788,7 @@ vic2_init
         rts
 
 ; ============================================================================
-; Grunt mesh data (151 vertices, 295 faces split 147+148, 16 animation frames)
+; Grunt mesh data (151 vertices, 295 faces split 147+148, 24 animation frames)
 ; ============================================================================
         .include "grunt_anim.asm"
 
@@ -851,10 +851,10 @@ _ig_faces1
         sta mesh_py_lo
         sta mesh_py_hi
 
-        ; pz = 1500 (s16) = $05DC
-        lda #<1500
+        ; pz = 1370 (s16) = $055A
+        lda #<1370
         sta mesh_pz_lo
-        lda #>1500
+        lda #>1370
         sta mesh_pz_hi
 
         ; theta = 20

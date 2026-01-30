@@ -295,11 +295,140 @@ def merge_and_scale(frames, indices, target_size=120):
 
     return scaled_frames, new_indices
 
+def fix_winding(frames, indices):
+    """Fix face winding using edge adjacency propagation.
+
+    Algorithm:
+    1. Build edge map: for each edge, track which triangles use it and in what order
+    2. Pick triangle 0 as correctly oriented, add to queue
+    3. BFS: for each triangle, find adjacent triangles via shared edges
+       - Adjacent triangles should have the shared edge in opposite order
+       - If same order, flip the adjacent triangle's winding
+    4. Continue until all reachable triangles are processed
+    """
+    from collections import defaultdict, deque
+
+    num_faces = len(indices) // 3
+    fixed_indices = list(indices)
+
+    # Build edge map: edge (a,b) -> list of (triangle_idx, which edge in triangle)
+    # Edge 0 is (v0,v1), edge 1 is (v1,v2), edge 2 is (v2,v0)
+    edge_to_tris = defaultdict(list)
+
+    for f in range(num_faces):
+        v0, v1, v2 = fixed_indices[f*3], fixed_indices[f*3+1], fixed_indices[f*3+2]
+        # Store with canonical edge key (min, max) but remember the actual order
+        edges = [(v0, v1), (v1, v2), (v2, v0)]
+        for edge_idx, (a, b) in enumerate(edges):
+            key = (min(a, b), max(a, b))
+            edge_to_tris[key].append((f, edge_idx, a, b))  # tri, edge_pos, actual order
+
+    # BFS to propagate consistent winding
+    correct = [False] * num_faces
+    correct[0] = True  # Triangle 0 is reference
+    queue = deque([0])
+    fixed_count = 0
+
+    while queue:
+        t = queue.popleft()
+        v0, v1, v2 = fixed_indices[t*3], fixed_indices[t*3+1], fixed_indices[t*3+2]
+        edges = [(v0, v1), (v1, v2), (v2, v0)]
+
+        for a, b in edges:
+            key = (min(a, b), max(a, b))
+            for (other_t, other_edge_idx, other_a, other_b) in edge_to_tris[key]:
+                if other_t == t or correct[other_t]:
+                    continue
+
+                # Check if other triangle has edge in opposite order
+                # We have edge (a, b), other should have (b, a)
+                if other_a == a and other_b == b:
+                    # Same order - need to flip the other triangle
+                    ov0 = fixed_indices[other_t*3]
+                    ov1 = fixed_indices[other_t*3+1]
+                    ov2 = fixed_indices[other_t*3+2]
+                    # Swap v1 and v2 to reverse winding
+                    fixed_indices[other_t*3+1] = ov2
+                    fixed_indices[other_t*3+2] = ov1
+                    fixed_count += 1
+
+                    # Update edge map for the flipped triangle
+                    # (We need to update the stored edge orders)
+                    new_edges = [(ov0, ov2), (ov2, ov1), (ov1, ov0)]
+                    for new_edge_idx, (na, nb) in enumerate(new_edges):
+                        new_key = (min(na, nb), max(na, nb))
+                        # Find and update this triangle's entry
+                        for i, entry in enumerate(edge_to_tris[new_key]):
+                            if entry[0] == other_t:
+                                edge_to_tris[new_key][i] = (other_t, new_edge_idx, na, nb)
+                                break
+
+                correct[other_t] = True
+                queue.append(other_t)
+
+    # Check for disconnected components
+    not_reached = sum(1 for c in correct if not c)
+    if not_reached > 0:
+        print(f"WARNING: {not_reached} triangles not connected to triangle 0")
+
+    print(f"Fixed winding on {fixed_count} faces")
+    return fixed_indices
+
+def zdepth_quintile_colors(positions, indices):
+    """Color faces by Z-depth quintiles (front to back).
+
+    Quintiles 1,2 (front) -> color 1
+    Quintile 3 (middle) -> color 2
+    Quintiles 4,5 (back) -> color 3
+    """
+    num_faces = len(indices) // 3
+
+    # Compute centroid Z for each face
+    face_z = []
+    for f in range(num_faces):
+        i, j, k = indices[f*3], indices[f*3+1], indices[f*3+2]
+        cz = (positions[i][2] + positions[j][2] + positions[k][2]) / 3
+        face_z.append((cz, f))
+
+    # Sort by Z (front to back, assuming -Z is front)
+    face_z.sort()
+
+    # Assign quintiles
+    face_colors = [0] * num_faces
+    faces_per_quintile = num_faces // 5
+    remainder = num_faces % 5
+
+    # Quintile boundaries
+    boundaries = []
+    pos = 0
+    for q in range(5):
+        extra = 1 if q < remainder else 0
+        boundaries.append(pos + faces_per_quintile + extra)
+        pos = boundaries[-1]
+
+    # Assign colors: Q1,Q2 -> 1, Q3 -> 2, Q4,Q5 -> 3
+    for rank, (z, f) in enumerate(face_z):
+        if rank < boundaries[1]:  # Q1 or Q2
+            face_colors[f] = 1
+        elif rank < boundaries[2]:  # Q3
+            face_colors[f] = 2
+        else:  # Q4 or Q5
+            face_colors[f] = 3
+
+    print(f"Z-depth quintile coloring: front(Q1,Q2)->1, middle(Q3)->2, back(Q4,Q5)->3")
+    return face_colors
+
 def export_assembly(frames, indices, output_path):
     """Export baked animation as assembly data."""
     num_frames = len(frames)
     num_vertices = len(frames[0])
     num_faces = len(indices) // 3
+
+    # Fix face winding before export
+    indices = fix_winding(frames, indices)
+
+    # Generate Z-depth quintile colors based on first frame positions
+    face_colors = zdepth_quintile_colors(frames[0], indices)
 
     # Split faces into two sub-meshes
     split = num_faces // 2
@@ -352,9 +481,9 @@ def export_assembly(frames, indices, output_path):
         write_array('grunt_fj_1', [indices[i*3+1] for i in range(split, num_faces)])
         write_array('grunt_fk_1', [indices[i*3+2] for i in range(split, num_faces)])
 
-        # Face colors
-        fcol0 = [(1 + (i % 3)) for i in range(split)]
-        fcol1 = [(1 + (i % 3)) for i in range(split, num_faces)]
+        # Face colors (Z-depth quintile)
+        fcol0 = [face_colors[i] for i in range(split)]
+        fcol1 = [face_colors[i] for i in range(split, num_faces)]
         write_array('grunt_fcol_0', fcol0)
         write_array('grunt_fcol_1', fcol1)
 

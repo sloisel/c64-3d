@@ -19,8 +19,10 @@
 ;   DUAL_MESH = 0 : Single mesh, simpler/faster (up to 256 faces)
 ;
 ; Set DUAL_MESH before including this file, or default to 1
+; FLIP_ZSORT = 1 reverses Z-sort order (correct for our coordinate system)
 .weak
 DUAL_MESH = 1
+FLIP_ZSORT = 1
 .endweak
 
 ; ============================================================================
@@ -219,7 +221,13 @@ _tm_do_vertex
         sta _tm_rot_z
 
         ; Store rot_z for painter's algorithm sorting
+        ; If FLIP_ZSORT=1, negate to reverse sort order
         ldx zp_vtx_idx
+.if FLIP_ZSORT
+        eor #$ff
+        clc
+        adc #1
+.endif
         sta mesh_rot_z,x
 
         ; ----------------------------------------------------------------
