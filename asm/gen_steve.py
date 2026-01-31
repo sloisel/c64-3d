@@ -9,7 +9,7 @@ import math
 import sys
 
 NUM_FRAMES = 24
-MAX_SWING_ANGLE = math.pi / 6  # 30 degrees max swing
+MAX_SWING_ANGLE = math.pi / 4  # 45 degrees max swing (was 30)
 
 
 def generate_box_vertices(x0, x1, y0, y1, z0, z1):
@@ -161,16 +161,28 @@ def generate_faces():
     all_faces = []
     face_colors = []
 
-    # Colors: 1=skin, 2=body, 3=legs
-    box_colors = [1, 2, 1, 1, 3, 3]  # head, body, r_arm, l_arm, r_leg, l_leg
+    # Colors: 1=medium gray, 2=light gray, 3=white
+    # Face order: [front, front, back, back, top, top, bottom, bottom, right, right, left, left]
+    #
+    # Head, arms, legs: front/back/top/bottom=dark(1), sides=light(2)
+    # Torso: front/back/top/bottom=white(3), sides=light(2)
+    limb_pattern = [1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2]  # dark faces, light sides
+    torso_pattern = [3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2]  # white faces, light sides
+
+    box_color_patterns = [
+        limb_pattern,   # head
+        torso_pattern,  # body
+        limb_pattern,   # r_arm
+        limb_pattern,   # l_arm
+        limb_pattern,   # r_leg
+        limb_pattern,   # l_leg
+    ]
 
     for box_idx in range(6):
         base = box_idx * 8
         faces = generate_box_faces(base, flip_winding=False)
         all_faces.extend(faces)
-        # Cycle colors per triangle for debugging
-        for j in range(12):
-            face_colors.append((j % 3) + 1)
+        face_colors.extend(box_color_patterns[box_idx])
 
     return all_faces, face_colors
 
