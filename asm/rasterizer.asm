@@ -511,7 +511,7 @@ _got_endpoints2
 
         ; Save original y for restoration
         lda zp_y
-        sta dri_saved_y
+        sta zp_dri_saved_y
 
         ; Handle empty rows first
         ; Check if row 1 empty (xl >= xr)
@@ -532,7 +532,7 @@ _got_endpoints2
         lda zp_xr2
         sta zp_xr
         jsr draw_span_bottom
-        jmp _dri_restore_y
+        jmp _dri_done
 
 _dri_row1_valid
         ; Row 1 valid, check row 2
@@ -626,7 +626,7 @@ _dri_case2_1
         lda dri_saved_xr2
         sta zp_xr               ; xr = xr2
         jsr draw_span_bottom
-        jmp _dri_restore_y
+        jmp _dri_done
 
 _dri_case2_2
         ; CASE 2.2: Disjoint (empty middle)
@@ -649,7 +649,7 @@ _dri_case2_2
         lda dri_saved_xr2
         sta zp_xr               ; xr = xr2
         jsr draw_span_bottom
-        jmp _dri_restore_y
+        jmp _dri_done
 
 _dri_xl2_less
         ; xl2 < xl1
@@ -694,7 +694,7 @@ _dri_case4
         lda dri_saved_xr2
         sta zp_xr               ; xr = xr2
         jsr draw_span_bottom
-        jmp _dri_restore_y
+        jmp _dri_done
 
 _dri_xr2_le_xr1
         ; xr2 <= xr1: need third comparison for overlap check
@@ -769,11 +769,6 @@ _dri_case3_2
         jsr draw_span_top
         jmp _dri_done
 
-_dri_restore_y
-        lda dri_saved_y
-        sta zp_y
-        ; fall through to _dri_done
-
 _dri_done
         ; Advance edges by 2 * slope (using precomputed dx*2)
         ; x_long += dx_ac * 2
@@ -794,8 +789,8 @@ _dri_done
         adc zp_dx_short2_hi
         sta zp_x_short_hi
 
-        ; Advance y by 2
-        lda zp_y
+        ; Advance y by 2 (use saved y since intervals code may have modified zp_y)
+        lda zp_dri_saved_y
         clc
         adc #2
         sta zp_y
@@ -1144,8 +1139,7 @@ _drs_right_partial
 _drs_done
         rts
 
-; Temporaries for inlined draw_dual_row_intervals
-dri_saved_y    .byte 0
+; Temporaries for inlined draw_dual_row_intervals (zp_dri_saved_y is in ZP)
 dri_saved_xl1  .byte 0
 dri_saved_xr1  .byte 0
 dri_saved_xl2  .byte 0

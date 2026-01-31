@@ -228,6 +228,7 @@ zp_blit_temp    = $4a   ; temp for RMW
 zp_span_cstart  = $4b   ; char_start for draw_span_top/bottom
 zp_span_fstart  = $4c   ; full_start for draw_span_top/bottom
 zp_span_temp    = $4d   ; temp for draw_span_top/bottom
+zp_dri_saved_y  = $4e   ; saved y for draw_dual_row_intervals
 
 ; ----------------------------------------------------------------------------
 ; Constants

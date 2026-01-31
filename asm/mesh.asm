@@ -197,15 +197,12 @@ _tm_do_vertex
         rol a                   ; Shift hi left, carry in
         sta _tm_rot_x           ; This is rot_x in s8.0 format
 
-        ; Compute -s * lx (negate s first)
+        ; Compute s * lx
         lda zp_mesh_s
-        eor #$ff
-        clc
-        adc #1                  ; A = -s
         ldy _tm_lx
         #mul8x8_signed_m         ; A:Y = hi:lo
-        sty _tm_nslx_lo
-        sta _tm_nslx_hi
+        sty _tm_slx_lo
+        sta _tm_slx_hi
 
         ; Compute c * lz
         lda zp_mesh_c
@@ -214,13 +211,13 @@ _tm_do_vertex
         sty _tm_clz_lo
         sta _tm_clz_hi
 
-        ; rot_z_raw = -s*lx + c*lz (16-bit signed)
-        clc
-        lda _tm_nslx_lo
-        adc _tm_clz_lo
+        ; rot_z_raw = c*lz - s*lx (16-bit signed)
+        sec
+        lda _tm_clz_lo
+        sbc _tm_slx_lo
         sta zp_rot_z_lo
-        lda _tm_nslx_hi
-        adc _tm_clz_hi
+        lda _tm_clz_hi
+        sbc _tm_slx_hi
         sta zp_rot_z_hi
 
         ; Extract rot_z = rot_z_raw >> 7 (arithmetic shift)
@@ -355,11 +352,9 @@ _tm_z_ok
         sta zp_mul16_hi
         ldx zp_recip
         jsr mul16s_8u_hi        ; Returns A = high byte of signed product
-        ; Negate and add 25
+        ; Compute 25 - value: ~value + 1 + 25 = ~value + 26
         eor #$ff
-        clc
-        adc #1
-        clc
+        sec
         adc #25
         ldx zp_vtx_idx
         sta screen_y,x
@@ -385,8 +380,8 @@ _tm_slz_lo      .byte 0
 _tm_slz_hi      .byte 0
 _tm_clz_lo      .byte 0
 _tm_clz_hi      .byte 0
-_tm_nslx_lo     .byte 0
-_tm_nslx_hi     .byte 0
+_tm_slx_lo      .byte 0
+_tm_slx_hi      .byte 0
 _tm_rot_x       .byte 0
 _tm_rot_z       .byte 0
 

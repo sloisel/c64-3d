@@ -6,11 +6,11 @@
 | Octahedron | 6 | 8 | N/A (rotating) |
 | Zombie | 151 | 295 (147+148) | 24 |
 
-## Baseline FPS (PAL 50Hz)
+## Current FPS (PAL 50Hz)
 | Model | Full Render | Geometry Only | Rasterization Only |
 |-------|-------------|---------------|---------------------|
-| Octahedron | 20.47 FPS | 43.31 FPS | - |
-| Zombie | 2.04 FPS | 3.75 FPS | - |
+| Octahedron | 20.76 FPS | 43.31 FPS | - |
+| Zombie | 2.06 FPS | 3.75 FPS | - |
 
 ## Time Breakdown (ms per frame)
 | Model | Total | Geometry | Rasterization | Geometry % |
@@ -20,7 +20,7 @@
 
 Geometry and rasterization are roughly 50/50 for both models.
 
-## Backface Culling Impact
+## Backface Culling Impact (measured at baseline)
 | Model | Culling ON | Culling OFF | Speedup |
 |-------|------------|-------------|---------|
 | Octahedron | 20.47 FPS | 12.37 FPS | 1.65x |
@@ -74,7 +74,9 @@ bpl loop                ; 3
 4. **ZP temps for blitters** - saves 1 cycle per access
 5. **Pre-masked color tables** - saves AND instruction (2 cycles) per partial
 6. **Triple buffering** - smooth animation without tearing
-7. **Inlined draw_dual_row_intervals** - saves 12 cycles/call (~25K cycles/frame for zombie)
+7. **Inlined draw_dual_row_intervals** - eliminates JSR/RTS overhead
+8. **Rotation: subtraction instead of negation** - rot_z = c*lz - s*lx instead of -s*lx + c*lz, saves 9 cycles/vertex (~1,359 cycles/frame for zombie)
+9. **Eliminate y restore in intervals** - use saved_y directly at return point, saves 7 cycles on restore paths (~4,200 cycles/frame for zombie)
 
 ### Considered but Not Implemented
 1. **SMC for single-row endpoints** - patching cost (~20 cycles) exceeds savings (~3 cycles)
