@@ -140,7 +140,7 @@
         <div id="start-overlay">
             <div class="demo-selector">
                 <button class="demo-btn selected" onclick="selectDemo('octa', this)">Octahedron</button>
-                <button class="demo-btn" onclick="selectDemo('zombie', this)">Zombie</button>
+                <button class="demo-btn" onclick="selectDemo('steve', this)">Steve</button>
             </div>
             <div class="play-area" onclick="startEmulator()">
                 <div class="play-btn"></div>
@@ -162,7 +162,7 @@
 
         var demoInfo = {
             'octa': 'Spinning octahedron rendered in real-time on a Commodore 64.<br>80x50 chunky pixels, triple-buffered, with backface culling and painter\'s algorithm sorting.',
-            'zombie': 'Animated zombie with 295 triangles and 24-frame skeletal animation.<br>80x50 chunky pixels, triple-buffered, with backface culling and painter\'s algorithm sorting.'
+            'steve': 'Animated Minecraft Steve with 72 triangles and 24-frame walking animation.<br>80x50 chunky pixels, triple-buffered, with backface culling and painter\'s algorithm sorting.'
         };
 
         function selectDemo(demo, btn) {
@@ -181,7 +181,7 @@
             // Configure EmulatorJS
             window.EJS_player = '#game';
             window.EJS_core = 'vice_x64sc';
-            window.EJS_gameUrl = 'asm/' + selectedDemo + '.prg?v=3';
+            window.EJS_gameUrl = 'asm/' + selectedDemo + '.prg?v=4';
             window.EJS_pathtodata = 'https://cdn.emulatorjs.org/stable/data/';
             window.EJS_startOnLoaded = true;
 

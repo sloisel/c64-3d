@@ -2,6 +2,7 @@
 *.prg
 !asm/octa.prg
 !asm/zombie.prg
+!asm/steve.prg
 *.o
 *.bin
 *.lst

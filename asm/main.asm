@@ -317,6 +317,8 @@ main
         ; Initialize mesh data
 .if GRUNT_MESH
         jsr init_grunt
+.elif STEVE_MESH
+        jsr init_steve
 .else
         jsr init_octahedron
 .endif
@@ -350,8 +352,11 @@ _anim_loop
         sta mesh_theta
 
 .if GRUNT_MESH
-        ; Advance animation frame (grunt only)
+        ; Advance animation frame (grunt)
         jsr advance_grunt_frame
+.elif STEVE_MESH
+        ; Advance animation frame (steve)
+        jsr advance_steve_frame
 .endif
 
         jmp _anim_loop
@@ -795,7 +800,7 @@ cycle_count_hi  .byte 0
 ; Include rasterizer and mesh rendering
 ; ============================================================================
         .include "rasterizer.asm"
-DUAL_MESH = GRUNT_MESH          ; 1 = dual-mesh for grunt (295 faces), 0 = single for octahedron (8 faces)
+DUAL_MESH = GRUNT_MESH          ; 1 = dual-mesh for grunt (295 faces), 0 = single mesh for others
         .include "mesh.asm"
 
 ; ============================================================================
@@ -840,6 +845,7 @@ vic2_init
 ; ============================================================================
 ; Grunt mesh data (151 vertices, 295 faces split 147+148, 24 animation frames)
 ; ============================================================================
+.if GRUNT_MESH
         .include "grunt_anim.asm"
 
 grunt_frame .byte 0     ; Current animation frame (0-15)
@@ -912,10 +918,138 @@ _ig_faces1
         sta mesh_theta
 
         rts
+.endif
+
+; ============================================================================
+; init_steve - Initialize Minecraft Steve mesh data with animation
+; ============================================================================
+.if STEVE_MESH
+        .include "steve.asm"
+
+steve_frame .byte 0     ; Current animation frame (0-23)
+
+init_steve
+        ; Start at frame 0
+        lda #0
+        sta steve_frame
+
+        ; Load first frame vertices
+        jsr load_steve_frame
+
+        lda #STEVE_NUM_VERTICES
+        sta zp_mesh_num_verts
+
+        ; Copy faces (constant across all frames)
+        ldx #0
+_is_faces0
+        lda steve_fi_0,x
+        sta mesh_fi_0,x
+        lda steve_fj_0,x
+        sta mesh_fj_0,x
+        lda steve_fk_0,x
+        sta mesh_fk_0,x
+        lda steve_fcol_0,x
+        sta mesh_fcol_0,x
+        inx
+        cpx #STEVE_NUM_FACES_0
+        bne _is_faces0
+
+        lda #STEVE_NUM_FACES_0
+        sta zp_mesh_num_faces_0
+
+        lda #0
+        sta zp_mesh_num_faces_1
+
+        ; Transform parameters: px=0, py=0, pz=200
+        lda #0
+        sta zp_mesh_px_lo
+        sta zp_mesh_px_hi
+        sta zp_mesh_py_lo
+        sta zp_mesh_py_hi
+
+        lda #<200
+        sta zp_mesh_pz_lo
+        lda #>200
+        sta zp_mesh_pz_hi
+
+        ; theta = 20
+        lda #20
+        sta mesh_theta
+
+        rts
+
+; ============================================================================
+; load_steve_frame - Load vertex data for current animation frame
+; ============================================================================
+load_steve_frame
+        ; Set up source pointers based on steve_frame
+        ldx steve_frame
+
+        ; X axis pointer -> zp_anim_ptr
+        lda steve_vx_lo,x
+        sta zp_anim_ptr
+        lda steve_vx_hi,x
+        sta zp_anim_ptr+1
+
+        ; Copy X coordinates
+        ldy #0
+_lsf_x  lda (zp_anim_ptr),y
+        sta mesh_vx,y
+        iny
+        cpy #STEVE_NUM_VERTICES
+        bne _lsf_x
+
+        ; Y axis pointer -> zp_anim_ptr
+        ldx steve_frame
+        lda steve_vy_lo,x
+        sta zp_anim_ptr
+        lda steve_vy_hi,x
+        sta zp_anim_ptr+1
+
+        ; Copy Y coordinates
+        ldy #0
+_lsf_y  lda (zp_anim_ptr),y
+        sta mesh_vy,y
+        iny
+        cpy #STEVE_NUM_VERTICES
+        bne _lsf_y
+
+        ; Z axis pointer -> zp_anim_ptr
+        ldx steve_frame
+        lda steve_vz_lo,x
+        sta zp_anim_ptr
+        lda steve_vz_hi,x
+        sta zp_anim_ptr+1
+
+        ; Copy Z coordinates
+        ldy #0
+_lsf_z  lda (zp_anim_ptr),y
+        sta mesh_vz,y
+        iny
+        cpy #STEVE_NUM_VERTICES
+        bne _lsf_z
+
+        rts
+
+; ============================================================================
+; advance_steve_frame - Move to next animation frame
+; ============================================================================
+advance_steve_frame
+        inc steve_frame
+        lda steve_frame
+        cmp #STEVE_NUM_FRAMES
+        bcc _asf_ok
+        lda #0
+        sta steve_frame
+_asf_ok
+        jmp load_steve_frame    ; Tail call
+
+.endif
 
 ; ============================================================================
 ; load_grunt_frame - Load vertex data for current animation frame
 ; ============================================================================
+.if GRUNT_MESH
 ; Uses grunt_frame to index into pointer tables
 ; Copies 151 vertices from frame data to mesh_vx/vy/vz
 load_grunt_frame
@@ -980,6 +1114,7 @@ advance_grunt_frame
         sta grunt_frame
 _agf_ok
         jmp load_grunt_frame    ; Tail call
+.endif
 
 ; ============================================================================
 ; 3D MESH LOOKUP TABLES

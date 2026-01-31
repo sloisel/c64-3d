@@ -5,12 +5,14 @@
 |-------|----------|-------|------------------|
 | Octahedron | 6 | 8 | N/A (rotating) |
 | Zombie | 151 | 295 (147+148) | 24 |
+| Steve | 48 | 72 | 24 |
 
 ## Current FPS (PAL 50Hz)
 | Model | Full Render | Geometry Only | Rasterization Only |
 |-------|-------------|---------------|---------------------|
 | Octahedron | 25.63 FPS | 43.31 FPS | - |
 | Zombie | 2.60 FPS | 3.75 FPS | - |
+| Steve | 5.2 FPS | - | - |
 
 ### FPS History
 | Date | Octahedron | Zombie | Notes |
@@ -38,6 +40,7 @@ PAL C64: 985,248 Hz, 50 Hz refresh, ~19,705 cycles/vsync
 |-------|--------------|--------------|
 | Octahedron | 1.95 | ~38,400 |
 | Zombie | 19.23 | ~379,000 |
+| Steve | 9.62 | ~189,500 |
 
 ## Backface Culling Impact (measured at baseline)
 | Model | Culling ON | Culling OFF | Speedup |
@@ -113,3 +116,4 @@ bpl loop                ; 3
 - `RASTERIZE=1` - enable/disable rasterization (for geometry-only benchmarks)
 - `FLIP_ZSORT=1` - reverse Z-sort order for correct depth
 - `GRUNT_MESH=0/1` - octahedron vs zombie build
+- `STEVE_MESH=0/1` - Minecraft Steve build (with GRUNT_MESH=0)
