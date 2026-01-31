@@ -105,6 +105,10 @@ mesh_fcol_1     .fill MESH_MAX_FACES, 0
 ; Rotated Z per vertex (s8, for painter's algorithm sorting)
 mesh_rot_z      .fill MESH_MAX_VERTICES, 0
 
+; Face Z for sorting (sum of z/4 for 3 vertices, pre-computed for speed)
+face_z_0        .fill MESH_MAX_FACES, 0
+face_z_1        .fill MESH_MAX_FACES, 0
+
 ; Face render order for each sub-mesh (sorted back-to-front by radix sort)
 face_order_0    .fill MESH_MAX_FACES, 0
 face_order_1    .fill MESH_MAX_FACES, 0
@@ -379,9 +383,88 @@ _tm_too_close
 ; Temporaries for transform - now in zero page (zp_tm_*)
 
 ; ============================================================================
+; ROUTINE: compute_face_z_0
+; ============================================================================
+; Pre-compute face Z values for sub-mesh 0 using sum of z/4 for all 3 vertices.
+; This gives better sorting than using a single vertex.
+; ============================================================================
+
+compute_face_z_0
+        ldx #0
+_cfz0_loop
+        cpx zp_mesh_num_faces_0
+        beq _cfz0_done
+        ; Get z_i / 4
+        lda mesh_fi_0,x
+        tay
+        lda mesh_rot_z,y
+        lsr
+        lsr
+        sta zp_tm_lx            ; ZP temp (free during sort)
+        ; Get z_j / 4 and add
+        lda mesh_fj_0,x
+        tay
+        lda mesh_rot_z,y
+        lsr
+        lsr
+        adc zp_tm_lx            ; carry clear from lsr
+        sta zp_tm_lx
+        ; Get z_k / 4 and add
+        lda mesh_fk_0,x
+        tay
+        lda mesh_rot_z,y
+        lsr
+        lsr
+        adc zp_tm_lx            ; carry clear from lsr
+        sta face_z_0,x
+        inx
+        bne _cfz0_loop
+_cfz0_done
+        rts
+
+; ============================================================================
+; ROUTINE: compute_face_z_1
+; ============================================================================
+; Pre-compute face Z values for sub-mesh 1 using sum of z/4 for all 3 vertices.
+; ============================================================================
+
+compute_face_z_1
+        ldx #0
+_cfz1_loop
+        cpx zp_mesh_num_faces_1
+        beq _cfz1_done
+        ; Get z_i / 4
+        lda mesh_fi_1,x
+        tay
+        lda mesh_rot_z,y
+        lsr
+        lsr
+        sta zp_tm_lx            ; ZP temp (free during sort)
+        ; Get z_j / 4 and add
+        lda mesh_fj_1,x
+        tay
+        lda mesh_rot_z,y
+        lsr
+        lsr
+        adc zp_tm_lx
+        sta zp_tm_lx
+        ; Get z_k / 4 and add
+        lda mesh_fk_1,x
+        tay
+        lda mesh_rot_z,y
+        lsr
+        lsr
+        adc zp_tm_lx
+        sta face_z_1,x
+        inx
+        bne _cfz1_loop
+_cfz1_done
+        rts
+
+; ============================================================================
 ; ROUTINE: sort_faces_0
 ; ============================================================================
-; Sort sub-mesh 0 faces back-to-front using radix sort on rot_z of first vertex.
+; Sort sub-mesh 0 faces back-to-front using radix sort on face_z.
 ; ============================================================================
 
 sort_faces_0
@@ -405,9 +488,7 @@ _sf0_clear
 _sf0_count_loop
         cpx zp_mesh_num_faces_0
         beq _sf0_count_done
-        lda mesh_fi_0,x
-        tay
-        lda mesh_rot_z,y        ; already XORed when stored
+        lda face_z_0,x          ; pre-computed sum of z/4
         sta _sf0_inc+1          ; SMC: patch low byte of inc address
 _sf0_inc
         inc radix_count         ; becomes inc radix_count+Z
@@ -445,9 +526,7 @@ _sf0_scatter_loop
         cpx zp_mesh_num_faces_0
         beq _sf0_scatter_done
         stx _sf0_face+1         ; SMC: patch immediate operand
-        lda mesh_fi_0,x
-        tay
-        lda mesh_rot_z,y        ; already XORed when stored
+        lda face_z_0,x          ; pre-computed sum of z/4
         tay
         lda radix_count,y
         tax
@@ -490,9 +569,7 @@ _sf1_clear
 _sf1_count_loop
         cpx zp_mesh_num_faces_1
         beq _sf1_count_done
-        lda mesh_fi_1,x
-        tay
-        lda mesh_rot_z,y        ; already XORed when stored
+        lda face_z_1,x          ; pre-computed sum of z/4
         sta _sf1_inc+1          ; SMC: patch low byte of inc address
 _sf1_inc
         inc radix_count         ; becomes inc radix_count+Z
@@ -530,9 +607,7 @@ _sf1_scatter_loop
         cpx zp_mesh_num_faces_1
         beq _sf1_scatter_done
         stx _sf1_face+1         ; SMC: patch immediate operand
-        lda mesh_fi_1,x
-        tay
-        lda mesh_rot_z,y        ; already XORed when stored
+        lda face_z_1,x          ; pre-computed sum of z/4
         tay
         lda radix_count,y
         tax
@@ -565,6 +640,8 @@ _sf1_scatter_done
 render_mesh
 .if DUAL_MESH
         ; === DUAL MESH MODE: Sort both sub-meshes and merge-render ===
+        jsr compute_face_z_0
+        jsr compute_face_z_1
         jsr sort_faces_0
         jsr sort_faces_1
 
@@ -584,25 +661,21 @@ _rm_merge_loop
         cmp zp_mesh_num_faces_1
         bcs _rm_only_0
 
-        ; Both have faces - compare rot_z (want larger z first = back-to-front)
-        ; Get rot_z for current face in sub-mesh 0
+        ; Both have faces - compare face_z (want larger z first = back-to-front)
+        ; Get face_z for current face in sub-mesh 0
         ldx _rm_idx_0
         lda face_order_0,x
         tax
-        lda mesh_fi_0,x
-        tay
-        lda mesh_rot_z,y
+        lda face_z_0,x
         sta _rm_z0
 
-        ; Get rot_z for current face in sub-mesh 1
+        ; Get face_z for current face in sub-mesh 1
         ldx _rm_idx_1
         lda face_order_1,x
         tax
-        lda mesh_fi_1,x
-        tay
-        lda mesh_rot_z,y
+        lda face_z_1,x
 
-        ; Compare: signed comparison (z1 vs z0)
+        ; Compare: unsigned comparison (z1 vs z0)
         ; We want larger Z first, so if z0 >= z1, render mesh 0
         sec
         sbc _rm_z0              ; A = z1 - z0
@@ -657,6 +730,7 @@ _rm_done
 
 .else
         ; === SINGLE MESH MODE: Sort and render directly (faster) ===
+        jsr compute_face_z_0
         jsr sort_faces_0
 
         ; Simple loop through sorted faces

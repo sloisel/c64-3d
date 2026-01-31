@@ -10,9 +10,9 @@
 ## Current FPS (PAL 50Hz)
 | Model | Full Render | Geometry Only | Rasterization Only |
 |-------|-------------|---------------|---------------------|
-| Octahedron | 25.63 FPS | 43.31 FPS | - |
+| Octahedron | 22.5 FPS | - | - |
 | Zombie | 2.60 FPS | 3.75 FPS | - |
-| Steve | 5.2 FPS | - | - |
+| Steve | 5.07 FPS | - | - |
 
 ### FPS History
 | Date | Octahedron | Zombie | Notes |
@@ -24,6 +24,7 @@
 | 2026-01-31d | 24.88 FPS | 2.50 FPS | Radix sort SMC optimizations |
 | 2026-01-31e | 25.18 FPS | 2.62 FPS | Move hot variables to ZP |
 | 2026-01-31f | 25.63 FPS | 2.60 FPS | Inline div8s_8u_m macro |
+| 2026-01-31g | 22.5 FPS | - | Centroid Z-sort (trades speed for quality) |
 
 ## Time Breakdown (ms per frame)
 | Model | Total | Geometry | Rasterization | Geometry % |
@@ -38,9 +39,9 @@ PAL C64: 985,248 Hz, 50 Hz refresh, ~19,705 cycles/vsync
 
 | Model | Vsyncs/Frame | Cycles/Frame |
 |-------|--------------|--------------|
-| Octahedron | 1.95 | ~38,400 |
+| Octahedron | 2.22 | ~43,700 |
 | Zombie | 19.23 | ~379,000 |
-| Steve | 9.62 | ~189,500 |
+| Steve | 9.86 | ~194,300 |
 
 ## Backface Culling Impact (measured at baseline)
 | Model | Culling ON | Culling OFF | Speedup |
@@ -105,6 +106,7 @@ bpl loop                ; 3
 13. **Radix sort SMC optimizations** (2026-01-31) - Pre-XOR rot_z when storing (saves eor in count+scatter), page-aligned radix_count with SMC `inc` in count phase (saves lda/clc/adc/sta), SMC for face index in scatter. Saves ~10 cycles/face in sort. Speedup: 0.8% octahedron (24.68→24.88), 1.2% zombie (2.47→2.50)
 14. **Move hot variables to ZP** (2026-01-31) - Division temps (div_divisor/dividend/p0_hi), rasterizer temps (_temp_half_lo/hi), mesh properties (num_verts, num_faces_0/1, px/py/pz). Saves 1 cycle per access. Speedup: 1.2% octahedron (24.88→25.18), 4.8% zombie (2.50→2.62)
 15. **Inline div8s_8u_m macro** (2026-01-31) - Eliminates JSR/RTS overhead for 3 division calls per triangle. Adds ~700 bytes code size. Speedup: 1.8% octahedron (25.18→25.63), 0% zombie (code size increase may offset gains)
+16. **Centroid-based Z-sort** (2026-01-31) - Pre-compute face_z as sum of z/4 for all 3 vertices instead of using single vertex. Reduces Z-fighting artifacts when triangles from different body parts overlap. Trades ~12% performance for better visual quality. Cost: ~50 cycles/face to pre-compute, but saves 6 cycles/face in sort phases.
 
 ### Considered but Not Implemented
 1. **SMC for single-row endpoints** - patching cost (~20 cycles) exceeds savings (~3 cycles)
