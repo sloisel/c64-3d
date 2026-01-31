@@ -20,9 +20,11 @@
 ;
 ; Set DUAL_MESH before including this file, or default to 1
 ; FLIP_ZSORT = 1 reverses Z-sort order (correct for our coordinate system)
+; RASTERIZE = 0 skips rasterization (for benchmarking geometry cost)
 .weak
 DUAL_MESH = 1
 FLIP_ZSORT = 1
+RASTERIZE = 1
 .endweak
 
 ; XOR value for signed-to-unsigned conversion in radix sort
@@ -918,7 +920,11 @@ _rm_draw_face_0
 
         lda mesh_fcol_0,x
         sta zp_color
+.if RASTERIZE
         jmp draw_triangle       ; tail call
+.else
+        rts                     ; skip rasterization
+.endif
 
 ; Helper: draw face from sub-mesh 1
 ; Input: A = face index in sub-mesh 1
@@ -947,7 +953,11 @@ _rm_draw_face_1
 
         lda mesh_fcol_1,x
         sta zp_color
+.if RASTERIZE
         jmp draw_triangle       ; tail call
+.else
+        rts                     ; skip rasterization
+.endif
 
 _rm_idx_0       .byte 0
 _rm_idx_1       .byte 0

@@ -218,6 +218,17 @@ zp_dx_ac2_hi    = $2f   ; dx_ac * 2 (high)
 zp_dx_short2_lo = $30   ; dx_short * 2 (low)
 zp_dx_short2_hi = $31   ; dx_short * 2 (high)
 
+; Blitter temps (after mesh.asm's $32-$45)
+zp_blit_color   = $46   ; color pattern byte
+zp_blit_cstart  = $47   ; char_start
+zp_blit_fstart  = $48   ; full_start
+zp_blit_fend    = $49   ; full_end
+zp_blit_temp    = $4a   ; temp for RMW
+; Single-row blitter temps
+zp_span_cstart  = $4b   ; char_start for draw_span_top/bottom
+zp_span_fstart  = $4c   ; full_start for draw_span_top/bottom
+zp_span_temp    = $4d   ; temp for draw_span_top/bottom
+
 ; ----------------------------------------------------------------------------
 ; Constants
 ; ----------------------------------------------------------------------------

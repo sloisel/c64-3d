@@ -9,7 +9,8 @@
 #   make run-zombie   - Run zombie in VICE
 
 ASM = 64tass
-ASMFLAGS = -Wall
+# BACKFACE_CULL=1 enables backface culling; set to 0 to disable for testing
+ASMFLAGS = -Wall -D BACKFACE_CULL=1
 
 SOURCES = main.asm rasterizer.asm mesh.asm math.asm macros.asm grunt_anim.asm grunt_data.asm
 
