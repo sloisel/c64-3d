@@ -113,6 +113,8 @@ face_order_0    .fill MESH_MAX_FACES, 0
 face_order_1    .fill MESH_MAX_FACES, 0
 
 ; Radix sort count array (temporary, shared between sorts)
+; Page-aligned for SMC inc optimization
+        .align 256
 radix_count     .fill 256, 0
 
 ; Radix sort temp variables (shared between sort_faces_0 and sort_faces_1)
@@ -242,7 +244,8 @@ _tm_do_vertex
         rol a                   ; carry in
         sta zp_tm_rot_z
 
-        ; Store rot_z for painter's algorithm sorting
+        ; Store rot_z for painter's algorithm sorting (pre-XOR for radix sort)
+        eor #SORT_XOR           ; convert signed to unsigned for sorting
         ldx zp_vtx_idx
         sta mesh_rot_z,x
 
@@ -405,20 +408,17 @@ _sf0_clear
         dex
         bpl _sf0_clear
 
-        ; --- Phase 2: Count occurrences ---
+        ; --- Phase 2: Count occurrences (SMC inc for speed) ---
         ldx #0
 _sf0_count_loop
         cpx mesh_num_faces_0
         beq _sf0_count_done
         lda mesh_fi_0,x
         tay
-        lda mesh_rot_z,y
-        eor #SORT_XOR
-        tay
-        lda radix_count,y
-        clc
-        adc #1
-        sta radix_count,y
+        lda mesh_rot_z,y        ; already XORed when stored
+        sta _sf0_inc+1          ; SMC: patch low byte of inc address
+_sf0_inc
+        inc radix_count         ; becomes inc radix_count+Z
         inx
         bne _sf0_count_loop     ; Always branches (X wraps at 256, but we exit before)
 _sf0_count_done
@@ -447,25 +447,25 @@ _sf0_prefix_loop
         cpx #$ff
         bne _sf0_prefix_loop
 
-        ; --- Phase 4: Scatter ---
+        ; --- Phase 4: Scatter (SMC for face index) ---
         ldx #0
 _sf0_scatter_loop
         cpx mesh_num_faces_0
         beq _sf0_scatter_done
-        stx sf_face_idx
+        stx _sf0_face+1         ; SMC: patch immediate operand
         lda mesh_fi_0,x
         tay
-        lda mesh_rot_z,y
-        eor #SORT_XOR
+        lda mesh_rot_z,y        ; already XORed when stored
         tay
         lda radix_count,y
         tax
         clc
         adc #1
         sta radix_count,y
-        lda sf_face_idx
+_sf0_face
+        lda #0                  ; SMC: immediate gets patched with face index
         sta face_order_0,x
-        ldx sf_face_idx
+        tax                     ; restore loop index
         inx
         bne _sf0_scatter_loop   ; Always branches (exits via beq above)
 _sf0_scatter_done
@@ -493,20 +493,17 @@ _sf1_clear
         dex
         bpl _sf1_clear
 
-        ; --- Phase 2: Count occurrences ---
+        ; --- Phase 2: Count occurrences (SMC inc for speed) ---
         ldx #0
 _sf1_count_loop
         cpx mesh_num_faces_1
         beq _sf1_count_done
         lda mesh_fi_1,x
         tay
-        lda mesh_rot_z,y
-        eor #SORT_XOR
-        tay
-        lda radix_count,y
-        clc
-        adc #1
-        sta radix_count,y
+        lda mesh_rot_z,y        ; already XORed when stored
+        sta _sf1_inc+1          ; SMC: patch low byte of inc address
+_sf1_inc
+        inc radix_count         ; becomes inc radix_count+Z
         inx
         bne _sf1_count_loop     ; Always branches (X wraps at 256, but we exit before)
 _sf1_count_done
@@ -535,25 +532,25 @@ _sf1_prefix_loop
         cpx #$ff
         bne _sf1_prefix_loop
 
-        ; --- Phase 4: Scatter ---
+        ; --- Phase 4: Scatter (SMC for face index) ---
         ldx #0
 _sf1_scatter_loop
         cpx mesh_num_faces_1
         beq _sf1_scatter_done
-        stx sf_face_idx
+        stx _sf1_face+1         ; SMC: patch immediate operand
         lda mesh_fi_1,x
         tay
-        lda mesh_rot_z,y
-        eor #SORT_XOR
+        lda mesh_rot_z,y        ; already XORed when stored
         tay
         lda radix_count,y
         tax
         clc
         adc #1
         sta radix_count,y
-        lda sf_face_idx
+_sf1_face
+        lda #0                  ; SMC: immediate gets patched with face index
         sta face_order_1,x
-        ldx sf_face_idx
+        tax                     ; restore loop index
         inx
         bne _sf1_scatter_loop   ; Always branches (exits via beq above)
 _sf1_scatter_done
