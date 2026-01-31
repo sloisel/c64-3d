@@ -256,6 +256,9 @@ smult_eorx      ; i XOR 128 for i = 0..255
             .byte i ^ 128
         .endfor
 
+; NOTE: Signed × Unsigned tables (su_sum_*, su_diff_*) are defined in main.asm
+; at fixed addresses ($3880-$407f) for proper page alignment.
+
 ; ============================================================================
 ; TABLE SIZES
 ; ============================================================================
@@ -265,19 +268,25 @@ smult_eorx      ; i XOR 128 for i = 0..255
 ; negsqr_hi:    256 bytes (unsigned mul)
 ; recip_lo:      64 bytes (division)
 ; recip_hi:      64 bytes (division)
-; smult_sq1_lo: 512 bytes (signed mul)
-; smult_sq1_hi: 512 bytes (signed mul)
-; smult_sq2_lo: 512 bytes (signed mul)
-; smult_sq2_hi: 512 bytes (signed mul)
-; smult_eorx:   256 bytes (signed mul)
-; Total:       3968 bytes for lookup tables
+; smult_sq1_lo: 512 bytes (signed×signed mul)
+; smult_sq1_hi: 512 bytes (signed×signed mul)
+; smult_sq2_lo: 512 bytes (signed×signed mul)
+; smult_sq2_hi: 512 bytes (signed×signed mul)
+; smult_eorx:   256 bytes (signed×signed mul)
+; su_sum_lo:    512 bytes (signed×unsigned mul)
+; su_sum_hi:    512 bytes (signed×unsigned mul)
+; su_diff_lo:   512 bytes (signed×unsigned mul)
+; su_diff_hi:   512 bytes (signed×unsigned mul)
+; Total:       6016 bytes for lookup tables
 ;
 ; ============================================================================
 ; CYCLE COUNT SUMMARY
 ; ============================================================================
 ; Multiplication macros (in macros.asm, inlined for performance):
-;   mul8x8_unsigned_m: ~39 cycles (based on mult66.a, no JSR/RTS overhead)
-;   mul8x8_signed_m:   ~46 cycles (based on smult11.a, no JSR/RTS overhead)
+;   mul8x8_unsigned_m: ~41 cycles (based on mult66.a)
+;   mul8x8_signed_m:   ~46 cycles (based on smult11.a)
+;   mul8s_8u_m:        ~40 cycles (signed×unsigned, no eorx lookup needed)
+;   mul16s_8u_hi_m:    ~93 cycles (16-bit signed × 8-bit unsigned)
 ;
 ; Division subroutine:
 ;   div8s_8u_v2:       ~103 cycles (positive dividend, uses inlined muls)

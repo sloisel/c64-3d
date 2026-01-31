@@ -5,25 +5,21 @@
 ;
 ; Memory Map:
 ; -----------
-; $0000-$00FF: Zero page (our vars at $02-$05, $06-$2B)
+; $0000-$00FF: Zero page (our vars at $02-$05, $06-$50)
 ; $0100-$01FF: Stack
 ; $0400-$07E7: Screen buffer 1 (active)
 ; $0800-$0BFF: (Reserved for future screen buffer 2)
 ; $0C00-$0FFF: (Reserved for future screen buffer 3)
 ; $2000-$27FF: VIC charset (2KB) - VIC reads directly from here
-; $2800-$29FF: sqr_lo (512 bytes)
-; $2A00-$2BFF: sqr_hi (512 bytes)
-; $2C00-$2CFF: negsqr_lo (256 bytes)
-; $2D00-$2DFF: negsqr_hi (256 bytes)
-; $2E00-$2EFF: recip_persp (256 bytes) - perspective reciprocal (direct z8 index)
-; $2F00-$30FF: smult_sq1_lo (512 bytes) - MUST be page-aligned
-; $3100-$32FF: smult_sq1_hi (512 bytes) - MUST be page-aligned
-; $3300-$34FF: smult_sq2_lo (512 bytes) - MUST be page-aligned
-; $3500-$36FF: smult_sq2_hi (512 bytes) - MUST be page-aligned
-; $3700-$37FF: smult_eorx (256 bytes)
-; $3800-$383F: recip_lo (64 bytes)
-; $3840-$387F: recip_hi (64 bytes)
-; $3880+:      Code + test data
+; $2800+:      Math lookup tables (page-aligned where needed, ~8KB total)
+;              - sqr_lo/hi (512 bytes each, page-aligned)
+;              - negsqr_lo/hi (256 bytes each)
+;              - recip_persp (256 bytes)
+;              - smult_sq1/sq2 lo/hi (512 bytes each, page-aligned)
+;              - smult_eorx (256 bytes)
+;              - recip_lo/hi (64 bytes each)
+;              - su_sum/diff lo/hi (512 bytes each, page-aligned)
+; (After tables): Code
 ; (After code): rcos (256 bytes), rsin (256 bytes) - rotation tables
 
         .include "macros.asm"
@@ -33,9 +29,9 @@
 ; ============================================================================
         * = $0801
 
-; BASIC: 10 SYS14464 (=$3880)
+; BASIC: 10 SYS <main>
         .word (+), 10
-        .null $9e, "14464"
+        .null $9e, format("%d", main)
 +       .word 0
 
 ; Padding to $2000
@@ -58,43 +54,39 @@ chunky_charset
         .endfor
 
 ; ============================================================================
-; MATH LOOKUP TABLES at $2800
+; MATH LOOKUP TABLES - starts at $2800 (after VIC charset)
+; Tables needing page alignment use .align 256
 ; ============================================================================
         * = $2800
 
-; Quarter-square tables for unsigned multiplication
+; Quarter-square tables for unsigned multiplication (need page alignment for SMC)
 ; sqr[n] = floor(n²/4), for n = 0..511
+        .align 256
 sqr_lo
         .for n = 0, n < 512, n += 1
             .byte <((n*n)/4)
         .endfor
 
-        * = $2a00
+        .align 256
 sqr_hi
         .for n = 0, n < 512, n += 1
             .byte >((n*n)/4)
         .endfor
 
 ; Negative index tables for Y<X case (mult66.a style with -1 offset)
-        * = $2c00
+; These don't need page alignment - just 256 bytes each
 negsqr_lo
         .for n = 0, n < 256, n += 1
             .byte <(((256-n)*(256-n))/4 - 1)
         .endfor
 
-        * = $2d00
 negsqr_hi
         .for n = 0, n < 256, n += 1
             .byte >(((256-n)*(256-n))/4 - 1)
         .endfor
 
-; Perspective reciprocal table for 3D projection
-; 256-entry table indexed directly by z8 (no subtraction needed)
+; Perspective reciprocal table for 3D projection (256 bytes, no alignment needed)
 ; recip_persp[z8] = 4096 / z8 for z8 = 17..255
-; z8 = world_z >> 1 (k=1 shift parameter for wider FOV)
-; screen_offset = highbyte(world_x * recip) = 32 * world_x / world_z
-; Note: z8 < 17 would overflow 8 bits, entries 0-16 are invalid (set to 0)
-        * = $2e00
 recip_persp
         .for i = 0, i < 256, i += 1
             .if i < 17
@@ -104,62 +96,89 @@ recip_persp
             .endif
         .endfor
 
-; Signed multiplication tables (smult11 style)
-; IMPORTANT: These must be page-aligned ($xx00) for self-modifying code
-        * = $2f00
+; Signed multiplication tables (smult11 style) - need page alignment for SMC
+        .align 256
 smult_sq1_lo
         .for i = -256, i <= 254, i += 1
             .byte <((i*i)/4)
         .endfor
-        .byte 0                 ; padding
+        .byte 0                 ; padding to 512
 
-        * = $3100
+        .align 256
 smult_sq1_hi
         .for i = -256, i <= 254, i += 1
             .byte >((i*i)/4)
         .endfor
-        .byte 0                 ; padding
+        .byte 0                 ; padding to 512
 
-        * = $3300
+        .align 256
 smult_sq2_lo
         .for i = -255, i <= 255, i += 1
             .byte <((i*i)/4)
         .endfor
-        .byte 0                 ; padding
+        .byte 0                 ; padding to 512
 
-        * = $3500
+        .align 256
 smult_sq2_hi
         .for i = -255, i <= 255, i += 1
             .byte >((i*i)/4)
         .endfor
-        .byte 0                 ; padding
+        .byte 0                 ; padding to 512
 
-        * = $3700
+; smult_eorx doesn't need page alignment
 smult_eorx
         .for i = 0, i < 256, i += 1
             .byte i ^ 128
         .endfor
 
-; Reciprocal tables for division: recip[n] = floor(65536/n)
-; Placed after smult tables to avoid alignment conflicts
-        * = $3800
+; Reciprocal tables for division: recip[n] = floor(65536/n) (small, no alignment)
 recip_lo
         .byte 0                 ; [0] undefined
         .for n = 1, n < 64, n += 1
             .byte <(65536/n)
         .endfor
 
-        * = $3840
 recip_hi
         .byte 0                 ; [0] undefined
         .for n = 1, n < 64, n += 1
             .byte >(65536/n)
         .endfor
 
+; Signed × Unsigned multiplication tables - need page alignment for SMC
+; For signed a (-128..127) × unsigned b (0..255):
+;   a+b ranges from -128 to 382, indexed as (a^$80) + b = 0..510
+;   a-b ranges from -383 to 127, indexed as ~(a^$80) + b = 0..510
+        .align 256
+su_sum_lo       ; (n²)/4 for n = -128..382
+        .for n = -128, n <= 382, n += 1
+            .byte <((n*n)/4)
+        .endfor
+        .byte 0                 ; padding to 512
+
+        .align 256
+su_sum_hi
+        .for n = -128, n <= 382, n += 1
+            .byte >((n*n)/4)
+        .endfor
+        .byte 0                 ; padding to 512
+
+        .align 256
+su_diff_lo      ; (n²)/4 for n = 127..-383 (reversed for correct indexing)
+        .for n = 127, n >= -383, n -= 1
+            .byte <((n*n)/4)
+        .endfor
+        .byte 0                 ; padding to 512
+
+        .align 256
+su_diff_hi
+        .for n = 127, n >= -383, n -= 1
+            .byte >((n*n)/4)
+        .endfor
+        .byte 0                 ; padding to 512
+
 ; ============================================================================
-; CODE starts at $3880
+; CODE starts here (after all tables)
 ; ============================================================================
-        * = $3880
 
 ; ----------------------------------------------------------------------------
 ; Zero page allocations
@@ -229,6 +248,8 @@ zp_span_cstart  = $4b   ; char_start for draw_span_top/bottom
 zp_span_fstart  = $4c   ; full_start for draw_span_top/bottom
 zp_span_temp    = $4d   ; temp for draw_span_top/bottom
 zp_dri_saved_y  = $4e   ; saved y for draw_dual_row_intervals
+zp_m16m_u       = $4f   ; unsigned multiplier for mul16s_8u_hi_m
+zp_m16m_p1_hi   = $50   ; high byte of first product for mul16s_8u_hi_m
 
 ; ----------------------------------------------------------------------------
 ; Constants

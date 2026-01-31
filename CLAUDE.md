@@ -71,3 +71,32 @@ The vice-mcp server provides debugging tools (breakpoints, memory inspection, VI
 - `$D016` - Screen control (horizontal scroll, multicolor, 40/38 columns)
 - `$D020` - Border color
 - `$D021` - Background color
+
+## Current Debug Session (2026-01-31)
+
+**Problem:** octa.prg crashes on startup. Border turns green, background black, junk characters visible. VIC is in multicolor mode but charset isn't rendering correctly.
+
+**What was changed:**
+1. Added signed×unsigned quarter-square multiplication tables (su_sum_lo/hi, su_diff_lo/hi) - 2KB new tables
+2. Created `mul8s_8u_m` macro (~40 cycles) for 8-bit signed × unsigned multiply
+3. Created `mul16s_8u_hi_m` macro (~93 cycles) - inlined version of perspective projection multiply
+4. Removed old `mul16s_8u_hi` subroutine (was ~142-175 cycles with branching)
+5. Changed table layout to use `.align 256` instead of hardcoded addresses
+6. Fixed BASIC stub to use `format("%d", main)` instead of hardcoded address
+
+**Current table layout (from labels.txt):**
+- sqr_lo/hi: $2800, $2a00
+- negsqr_lo/hi: $2c00, $2d00
+- recip_persp: $2e00
+- smult tables: $2f00-$36ff
+- smult_eorx: $3700
+- recip_lo/hi: $3800, $3840
+- su_sum_lo/hi: $3900, $3b00
+- su_diff_lo/hi: $3d00, $3f00
+- main: $4100
+
+**To debug:**
+1. Start VICE: `x64sc -binarymonitor -binarymonitoraddress ip4://127.0.0.1:6502 asm/octa.prg`
+2. Use vice-mcp to inspect memory, set breakpoints, check if main is reached
+3. Check if VIC setup ($d018, $d016) is correct
+4. Verify charset at $2000 is intact

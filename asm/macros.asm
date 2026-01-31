@@ -331,6 +331,67 @@ _ms_sm3 lda smult_sq1_hi,x
 _ms_sm4 sbc smult_sq2_hi,x
 .endm
 
+; mul8s_8u_m - Signed × Unsigned 8×8=16 multiplication (inline macro)
+; Uses quarter-square identity with dedicated tables for the asymmetric ranges.
+;
+; Input:  A = signed 8-bit value (-128 to 127)
+;         Y = unsigned 8-bit value (0 to 255)
+; Output: A = high byte of product
+;         X = low byte of product
+;         Y = preserved
+;         (16-bit signed result in A:X, high:low)
+;
+; Cycle count: ~40 cycles (no table lookup for Y conversion)
+mul8s_8u_m .macro
+        eor #$80                ; 2 - convert signed to offset form
+        sta _su_sm1+1           ; 4 - self-mod for sum table base
+        sta _su_sm3+1           ; 4
+        eor #$ff                ; 2 - complement for diff table
+        sta _su_sm2+1           ; 4
+        sta _su_sm4+1           ; 4
+        sec                     ; 2
+_su_sm1 lda su_sum_lo,y         ; 4 - (a+b)²/4 low byte
+_su_sm2 sbc su_diff_lo,y        ; 4 - subtract (a-b)²/4 low
+        tax                     ; 2 - save low byte in X
+_su_sm3 lda su_sum_hi,y         ; 4 - (a+b)²/4 high byte
+_su_sm4 sbc su_diff_hi,y        ; 4 - subtract (a-b)²/4 high
+        ; Result: A = high byte, X = low byte
+.endm
+
+; mul16s_8u_hi_m - 16-bit Signed × 8-bit Unsigned, returns high byte (inline macro)
+; Computes (signed_hi:signed_lo) × unsigned, returns bits 15-8 of 24-bit result.
+;
+; Input:  zp_mul16_lo = low byte of signed 16-bit value
+;         zp_mul16_hi = high byte of signed 16-bit value (sign in bit 7)
+;         Y = unsigned 8-bit value (0 to 255)
+; Output: A = bits 15-8 of the 24-bit signed product
+;         X, Y = clobbered
+;
+; Method: result = (hi × u) << 8 + (lo × u)
+;         Bits 15-8 = high_byte(lo × u) + low_byte(hi × u)
+;
+; Requires: zp_m16m_u ($4f), zp_m16m_p1_hi ($50) defined in main.asm
+;
+; Cycle count: ~93 cycles (vs ~142-175 for subroutine version)
+mul16s_8u_hi_m .macro
+        ; First: lo × u (unsigned × unsigned)
+        sty zp_m16m_u           ; 3 - save unsigned multiplier
+        ldx zp_mul16_lo         ; 3
+        #mul8x8_unsigned_m      ; ~41 - A = high byte, prod_low = low byte
+        sta zp_m16m_p1_hi       ; 3 - save high byte of (lo × u)
+
+        ; Second: hi × u (signed × unsigned)
+        lda zp_mul16_hi         ; 3
+        ldy zp_m16m_u           ; 3
+        #mul8s_8u_m             ; ~40 - A = high, X = low
+
+        ; Combine: result byte 1 = p1_hi + p2_lo
+        clc                     ; 2
+        txa                     ; 2 - get low byte of (hi × u)
+        adc zp_m16m_p1_hi       ; 3 - add high byte of (lo × u)
+        ; A = bits 15-8 of result
+.endm
+
 ; ============================================================================
 ; ASSEMBLER HELPERS
 ; ============================================================================

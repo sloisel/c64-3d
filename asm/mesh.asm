@@ -59,6 +59,21 @@ zp_face_idx     = $43   ; current face index
 zp_mul16_lo     = $44   ; 16-bit signed value for multiply (low)
 zp_mul16_hi     = $45   ; 16-bit signed value for multiply (high)
 
+; Transform temporaries (in ZP for speed)
+zp_tm_lx        = $46
+zp_tm_lz        = $47
+zp_tm_clx_lo    = $48
+zp_tm_clx_hi    = $49
+zp_tm_slz_lo    = $4a
+zp_tm_slz_hi    = $4b
+zp_tm_clz_lo    = $4c
+zp_tm_clz_hi    = $4d
+zp_tm_slx_lo    = $4e
+; Note: zp_m16m_u = $4f, zp_m16m_p1_hi = $50 used by mul16s_8u_hi_m
+zp_tm_slx_hi    = $51
+zp_tm_rot_x     = $52
+zp_tm_rot_z     = $53
+
 ; ============================================================================
 ; Mesh data structure (in main memory)
 ; ============================================================================
@@ -162,31 +177,31 @@ _tm_do_vertex
 
         ; Load local coordinates
         lda mesh_vx,x
-        sta _tm_lx
+        sta zp_tm_lx
         lda mesh_vz,x
-        sta _tm_lz
+        sta zp_tm_lz
 
         ; Compute c * lx (s0.7 * s8.0 = s8.7)
         lda zp_mesh_c
-        ldy _tm_lx
+        ldy zp_tm_lx
         #mul8x8_signed_m         ; A:Y = hi:lo
-        sty _tm_clx_lo
-        sta _tm_clx_hi
+        sty zp_tm_clx_lo
+        sta zp_tm_clx_hi
 
         ; Compute s * lz (s0.7 * s8.0 = s8.7)
         lda zp_mesh_s
-        ldy _tm_lz
+        ldy zp_tm_lz
         #mul8x8_signed_m         ; A:Y = hi:lo
-        sty _tm_slz_lo
-        sta _tm_slz_hi
+        sty zp_tm_slz_lo
+        sta zp_tm_slz_hi
 
         ; rot_x_raw = c*lx + s*lz (16-bit signed)
         clc
-        lda _tm_clx_lo
-        adc _tm_slz_lo
+        lda zp_tm_clx_lo
+        adc zp_tm_slz_lo
         sta zp_rot_x_lo
-        lda _tm_clx_hi
-        adc _tm_slz_hi
+        lda zp_tm_clx_hi
+        adc zp_tm_slz_hi
         sta zp_rot_x_hi
 
         ; Extract rot_x = rot_x_raw >> 7 (arithmetic shift)
@@ -195,29 +210,29 @@ _tm_do_vertex
         rol a                   ; Shift lo left, bit 7 into carry
         lda zp_rot_x_hi
         rol a                   ; Shift hi left, carry in
-        sta _tm_rot_x           ; This is rot_x in s8.0 format
+        sta zp_tm_rot_x         ; This is rot_x in s8.0 format
 
         ; Compute s * lx
         lda zp_mesh_s
-        ldy _tm_lx
+        ldy zp_tm_lx
         #mul8x8_signed_m         ; A:Y = hi:lo
-        sty _tm_slx_lo
-        sta _tm_slx_hi
+        sty zp_tm_slx_lo
+        sta zp_tm_slx_hi
 
         ; Compute c * lz
         lda zp_mesh_c
-        ldy _tm_lz
+        ldy zp_tm_lz
         #mul8x8_signed_m         ; A:Y = hi:lo
-        sty _tm_clz_lo
-        sta _tm_clz_hi
+        sty zp_tm_clz_lo
+        sta zp_tm_clz_hi
 
         ; rot_z_raw = c*lz - s*lx (16-bit signed)
         sec
-        lda _tm_clz_lo
-        sbc _tm_slx_lo
+        lda zp_tm_clz_lo
+        sbc zp_tm_slx_lo
         sta zp_rot_z_lo
-        lda _tm_clz_hi
-        sbc _tm_slx_hi
+        lda zp_tm_clz_hi
+        sbc zp_tm_slx_hi
         sta zp_rot_z_hi
 
         ; Extract rot_z = rot_z_raw >> 7 (arithmetic shift)
@@ -225,7 +240,7 @@ _tm_do_vertex
         rol a                   ; bit 7 into carry
         lda zp_rot_z_hi
         rol a                   ; carry in
-        sta _tm_rot_z
+        sta zp_tm_rot_z
 
         ; Store rot_z for painter's algorithm sorting
         ldx zp_vtx_idx
@@ -239,15 +254,13 @@ _tm_do_vertex
         ; ----------------------------------------------------------------
 
         ; world_x = rot_x (s8) + px (s16) - sign extend rot_x to 16 bits
-        lda _tm_rot_x
+        lda zp_tm_rot_x
         sta zp_world_x_lo
         ; Sign extend to high byte
-        bpl _wx_pos             ; If positive, high byte = 0
-        lda #$ff                ; Negative: high byte = $ff
-        jmp _wx_done
-_wx_pos lda #0                  ; Positive: high byte = 0
-_wx_done
-        sta zp_world_x_hi
+        ora #$7f                ; A = $7f if positive, $ff if negative
+        bmi +
+        lda #0
++       sta zp_world_x_hi
         ; Add px
         clc
         lda zp_world_x_lo
@@ -261,12 +274,10 @@ _wx_done
         ldx zp_vtx_idx
         lda mesh_vy,x
         sta zp_world_y_lo
-        bpl _wy_pos
-        lda #$ff
-        jmp _wy_done
-_wy_pos lda #0
-_wy_done
-        sta zp_world_y_hi
+        ora #$7f
+        bmi +
+        lda #0
++       sta zp_world_y_hi
         clc
         lda zp_world_y_lo
         adc mesh_py_lo
@@ -276,14 +287,12 @@ _wy_done
         sta zp_world_y_hi
 
         ; world_z = rot_z + pz (rot_z is s8, sign extend)
-        lda _tm_rot_z
+        lda zp_tm_rot_z
         sta zp_world_z_lo
-        bpl _wz_pos
-        lda #$ff
-        jmp _wz_done
-_wz_pos lda #0
-_wz_done
-        sta zp_world_z_hi
+        ora #$7f
+        bmi +
+        lda #0
++       sta zp_world_z_hi
         clc
         lda zp_world_z_lo
         adc mesh_pz_lo
@@ -297,12 +306,13 @@ _wz_done
         ; ----------------------------------------------------------------
 
         lda zp_world_z_hi
-        bmi _tm_behind_camera   ; Negative = behind camera
-        bne _tm_z_ok            ; High byte > 0, definitely in front
+        bpl +                   ; Not negative, check further
+        jmp _tm_behind_camera   ; Negative = behind camera
++       bne _tm_z_ok            ; High byte > 0, definitely in front
         ; High byte = 0, check low byte
         lda zp_world_z_lo
-        beq _tm_behind_camera   ; z = 0, on camera plane, reject
-        ; z > 0, ok
+        bne _tm_z_ok            ; z > 0, ok
+        jmp _tm_behind_camera   ; z = 0, on camera plane, reject
 _tm_z_ok
 
         ; ----------------------------------------------------------------
@@ -325,7 +335,9 @@ _tm_z_ok
         ; Check z8 >= 17 (below this, recip would overflow 8 bits)
         lda zp_z8
         cmp #17
-        bcc _tm_too_close       ; z8 < 17, object too close
+        bcs +                   ; z8 >= 17, ok
+        jmp _tm_too_close       ; z8 < 17, object too close
++
 
         ; Look up reciprocal: direct index by z8
         tax
@@ -338,8 +350,8 @@ _tm_z_ok
         sta zp_mul16_lo
         lda zp_world_x_hi
         sta zp_mul16_hi
-        ldx zp_recip
-        jsr mul16s_8u_hi        ; Returns A = high byte of signed product
+        ldy zp_recip
+        #mul16s_8u_hi_m         ; Returns A = high byte of signed product
         clc
         adc #40                 ; Add screen center
         ldx zp_vtx_idx
@@ -350,8 +362,8 @@ _tm_z_ok
         sta zp_mul16_lo
         lda zp_world_y_hi
         sta zp_mul16_hi
-        ldx zp_recip
-        jsr mul16s_8u_hi        ; Returns A = high byte of signed product
+        ldy zp_recip
+        #mul16s_8u_hi_m         ; Returns A = high byte of signed product
         ; Compute 25 - value: ~value + 1 + 25 = ~value + 26
         eor #$ff
         sec
@@ -369,203 +381,7 @@ _tm_too_close
         lda #$ff
         rts
 
-; Temporaries for transform
-_tm_lx          .byte 0
-_tm_lz          .byte 0
-_tm_prod_lo     .byte 0
-_tm_prod_hi     .byte 0
-_tm_clx_lo      .byte 0
-_tm_clx_hi      .byte 0
-_tm_slz_lo      .byte 0
-_tm_slz_hi      .byte 0
-_tm_clz_lo      .byte 0
-_tm_clz_hi      .byte 0
-_tm_slx_lo      .byte 0
-_tm_slx_hi      .byte 0
-_tm_rot_x       .byte 0
-_tm_rot_z       .byte 0
-
-; ============================================================================
-; ROUTINE: mul8s_8u_hi
-; ============================================================================
-; Signed 8-bit * unsigned 8-bit multiply, returns high byte.
-;
-; Input: A = signed value (-128 to 127)
-;        X = unsigned value (0 to 255)
-;
-; Output: A = high byte of signed 16-bit product
-;
-; Uses quarter-square multiplication method.
-; For negative A, negates A, multiplies, then negates result.
-; ============================================================================
-
-mul8s_8u_hi
-        sta _m8_signed
-        stx _m8_unsigned
-
-        ; Check if signed value is negative
-        cmp #$80
-        bcc _m8_positive
-
-        ; Negative: negate A, multiply, negate result
-        eor #$ff
-        clc
-        adc #1
-        tay                     ; Y = |A|
-        ldx _m8_unsigned
-        jsr _m8_do_mul          ; Returns A = high byte
-
-        ; Negate high byte (2's complement the whole result)
-        ; Since we only return high byte, we need to consider low byte
-        ; For proper 2's complement: if low byte was 0, high = ~high + 1
-        ; If low byte was non-zero, high = ~high
-        lda prod_low
-        bne +
-        ; Low byte is 0, add 1 to negated high
-        lda _m8_result
-        eor #$ff
-        clc
-        adc #1
-        rts
-+       ; Low byte non-zero
-        lda _m8_result
-        eor #$ff
-        rts
-
-_m8_positive
-        tay                     ; Y = A (positive signed value)
-        ldx _m8_unsigned
-        jsr _m8_do_mul
-        lda _m8_result
-        rts
-
-_m8_do_mul
-        ; Y = first factor (unsigned), X = second factor (unsigned)
-        ; Use the unsigned multiply macro
-        #mul8x8_unsigned_m      ; Returns A = high byte, prod_low = low byte
-        sta _m8_result
-        rts
-
-_m8_signed      .byte 0
-_m8_unsigned    .byte 0
-_m8_result      .byte 0
-
-; ============================================================================
-; ROUTINE: mul16s_8u_hi
-; ============================================================================
-; Signed 16-bit * unsigned 8-bit multiply, returns high byte of 24-bit result.
-; (Actually returns bits 15-8 of the result, which is what we need for perspective)
-;
-; Input: zp_mul16_lo/hi = signed 16-bit value
-;        X = unsigned 8-bit value
-;
-; Output: A = byte 1 (bits 15-8) of signed 24-bit product
-;
-; For negative input, negates, multiplies unsigned, then negates result.
-; ============================================================================
-
-mul16s_8u_hi
-        stx _m16_unsigned
-
-        ; Check sign of 16-bit value
-        lda zp_mul16_hi
-        bmi _m16_negative
-
-        ; Positive: do unsigned 16x8 multiply
-        jsr _m16_do_unsigned
-        rts
-
-_m16_negative
-        ; Negative: negate input, multiply, negate result
-        ; Negate 16-bit value: ~value + 1
-        lda zp_mul16_lo
-        eor #$ff
-        clc
-        adc #1
-        sta _m16_abs_lo
-        lda zp_mul16_hi
-        eor #$ff
-        adc #0
-        sta _m16_abs_hi
-
-        ; Now multiply the absolute value
-        jsr _m16_do_unsigned_abs
-
-        ; Negate 24-bit result: need to return negated byte 1
-        ; Full negate: ~result + 1
-        ; Byte 0 (prod_low from lo*recip): if 0, add 1 to byte 1
-        ; Actually we have: result = (p1_hi + p2_lo + carry) in _m16_byte1
-        ; and prod_low has the low byte from the last multiply
-
-        ; The low byte of full result is in _m16_byte0
-        lda _m16_byte0
-        bne _m16_neg_no_carry
-        ; Low byte is 0, so ~byte1 + 1
-        lda _m16_byte1
-        eor #$ff
-        clc
-        adc #1
-        rts
-
-_m16_neg_no_carry
-        ; Low byte non-zero, so just ~byte1
-        lda _m16_byte1
-        eor #$ff
-        rts
-
-_m16_do_unsigned
-        ; Multiply zp_mul16 by _m16_unsigned (unsigned)
-        ; Result = (hi * 256 + lo) * recip = (hi * recip) << 8 + (lo * recip)
-        ; We want byte 1 (bits 15-8)
-
-        ; First: lo * recip
-        ldy zp_mul16_lo
-        ldx _m16_unsigned
-        #mul8x8_unsigned_m      ; A = hi, prod_low = lo
-        sta _m16_p1_hi          ; p1_hi = highbyte(lo * recip)
-        lda prod_low
-        sta _m16_byte0          ; byte 0 = lowbyte(lo * recip)
-
-        ; Second: hi * recip
-        ldy zp_mul16_hi
-        ldx _m16_unsigned
-        #mul8x8_unsigned_m      ; A = hi, prod_low = lo
-        ; p2_hi in A, p2_lo in prod_low
-
-        ; Byte 1 = p1_hi + p2_lo
-        clc
-        lda _m16_p1_hi
-        adc prod_low
-        sta _m16_byte1
-
-        rts
-
-_m16_do_unsigned_abs
-        ; Same as above but uses _m16_abs_lo/hi instead
-        ldy _m16_abs_lo
-        ldx _m16_unsigned
-        #mul8x8_unsigned_m
-        sta _m16_p1_hi
-        lda prod_low
-        sta _m16_byte0
-
-        ldy _m16_abs_hi
-        ldx _m16_unsigned
-        #mul8x8_unsigned_m
-
-        clc
-        lda _m16_p1_hi
-        adc prod_low
-        sta _m16_byte1
-
-        rts
-
-_m16_unsigned   .byte 0
-_m16_abs_lo     .byte 0
-_m16_abs_hi     .byte 0
-_m16_p1_hi      .byte 0
-_m16_byte0      .byte 0
-_m16_byte1      .byte 0
+; Temporaries for transform - now in zero page (zp_tm_*)
 
 ; ============================================================================
 ; ROUTINE: sort_faces_0
@@ -604,36 +420,28 @@ _sf0_count_loop
         adc #1
         sta radix_count,y
         inx
-        jmp _sf0_count_loop
+        bne _sf0_count_loop     ; Always branches (X wraps at 256, but we exit before)
 _sf0_count_done
 
         ; --- Phase 3: Prefix sum (backwards, 4x unrolled) ---
+        ; A holds running position, eliminating redundant loads
         lda mesh_num_faces_0
-        sta sf_position
         ldx #255
 _sf0_prefix_loop
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
         cpx #$ff
@@ -651,16 +459,15 @@ _sf0_scatter_loop
         eor #SORT_XOR
         tay
         lda radix_count,y
-        sta sf_pos_temp
+        tax
         clc
         adc #1
         sta radix_count,y
-        ldx sf_pos_temp
         lda sf_face_idx
         sta face_order_0,x
         ldx sf_face_idx
         inx
-        jmp _sf0_scatter_loop
+        bne _sf0_scatter_loop   ; Always branches (exits via beq above)
 _sf0_scatter_done
         rts
 
@@ -701,36 +508,28 @@ _sf1_count_loop
         adc #1
         sta radix_count,y
         inx
-        jmp _sf1_count_loop
+        bne _sf1_count_loop     ; Always branches (X wraps at 256, but we exit before)
 _sf1_count_done
 
         ; --- Phase 3: Prefix sum (backwards, 4x unrolled) ---
+        ; A holds running position, eliminating redundant loads
         lda mesh_num_faces_1
-        sta sf_position
         ldx #255
 _sf1_prefix_loop
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
-        lda sf_position
         sec
         sbc radix_count,x
-        sta sf_position
         sta radix_count,x
         dex
         cpx #$ff
@@ -748,16 +547,15 @@ _sf1_scatter_loop
         eor #SORT_XOR
         tay
         lda radix_count,y
-        sta sf_pos_temp
+        tax
         clc
         adc #1
         sta radix_count,y
-        ldx sf_pos_temp
         lda sf_face_idx
         sta face_order_1,x
         ldx sf_face_idx
         inx
-        jmp _sf1_scatter_loop
+        bne _sf1_scatter_loop   ; Always branches (exits via beq above)
 _sf1_scatter_done
         rts
 

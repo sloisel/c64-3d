@@ -9,16 +9,32 @@
 ## Current FPS (PAL 50Hz)
 | Model | Full Render | Geometry Only | Rasterization Only |
 |-------|-------------|---------------|---------------------|
-| Octahedron | 20.76 FPS | 43.31 FPS | - |
-| Zombie | 2.06 FPS | 3.75 FPS | - |
+| Octahedron | 24.68 FPS | 43.31 FPS | - |
+| Zombie | 2.47 FPS | 3.75 FPS | - |
+
+### FPS History
+| Date | Octahedron | Zombie | Notes |
+|------|------------|--------|-------|
+| Baseline | 20.76 FPS | 2.06 FPS | Before optimizations |
+| 2026-01-31a | 21.26 FPS | 2.17 FPS | Inline mul16s_8u_hi_m macro |
+| 2026-01-31b | 22.43 FPS | 2.22 FPS | ZP temps, radix sort, sign extend |
+| 2026-01-31c | 24.68 FPS | 2.47 FPS | Backface culling ZP reuse |
 
 ## Time Breakdown (ms per frame)
 | Model | Total | Geometry | Rasterization | Geometry % |
 |-------|-------|----------|---------------|------------|
-| Octahedron | 48.9 | 23.1 | 25.8 | 47% |
-| Zombie | 490 | 267 | 223 | 54% |
+| Octahedron | 40.5 | ~19 | ~22 | ~47% |
+| Zombie | 405 | ~219 | ~186 | ~54% |
 
 Geometry and rasterization are roughly 50/50 for both models.
+
+## Cycle Estimates (from FPS)
+PAL C64: 985,248 Hz, 50 Hz refresh, ~19,705 cycles/vsync
+
+| Model | Vsyncs/Frame | Cycles/Frame |
+|-------|--------------|--------------|
+| Octahedron | 2.03 | ~40,000 |
+| Zombie | 20.24 | ~399,000 |
 
 ## Backface Culling Impact (measured at baseline)
 | Model | Culling ON | Culling OFF | Speedup |
@@ -77,6 +93,9 @@ bpl loop                ; 3
 7. **Inlined draw_dual_row_intervals** - eliminates JSR/RTS overhead
 8. **Rotation: subtraction instead of negation** - rot_z = c*lz - s*lx instead of -s*lx + c*lz, saves 9 cycles/vertex (~1,359 cycles/frame for zombie)
 9. **Eliminate y restore in intervals** - use saved_y directly at return point, saves 7 cycles on restore paths (~4,200 cycles/frame for zombie)
+10. **Inline mul16s_8u_hi_m macro** (2026-01-31) - replaced subroutine call (~142-175 cycles) with inline macro (~93 cycles) for perspective projection. Added signed×unsigned quarter-square tables (su_sum/su_diff, 2KB). Speedup: 2.4% octahedron (20.76→21.26), 5.3% zombie (2.06→2.17)
+11. **Geometry micro-optimizations** (2026-01-31) - ZP temps for transform (~1 cycle/access), radix sort prefix sum redundant load removal, compact sign extension pattern, jmp→bne in loops. Speedup: 5.5% octahedron (21.26→22.43), 2.3% zombie (2.17→2.22)
+12. **Backface culling ZP reuse** (2026-01-31) - Reuse zp_det_t1-t4 for intermediate products instead of main memory temporaries, use X/Y registers to hold values. Saves ~8 cycles per triangle from ZP access and reduced stores. Speedup: 10% octahedron (22.43→24.68), 11% zombie (2.22→2.47)
 
 ### Considered but Not Implemented
 1. **SMC for single-row endpoints** - patching cost (~20 cycles) exceeds savings (~3 cycles)

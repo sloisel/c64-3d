@@ -64,36 +64,37 @@ draw_triangle
         lda zp_det_t1
         ldy zp_det_t2
         #mul8x8_signed_m         ; Result in A:Y (high:low)
-        ; Save result
-        sty _det_prod1_lo
-        sta _det_prod1_hi
+        ; Reuse zp_det_t1/t2 to store prod1 (they're no longer needed)
+        sty zp_det_t1            ; prod1_lo
+        sta zp_det_t2            ; prod1_hi
 
         ; Second product: (by-ay) * (cx-ax)
         lda zp_det_t3
         ldy zp_det_t4
         #mul8x8_signed_m         ; Result in A:Y (high:low)
-        ; A:Y = prod2 (by-ay)*(cx-ax)
-        sty _det_prod2_lo
-        sta _det_prod2_hi
+        ; A = prod2_hi, Y = prod2_lo
+        ; Reuse zp_det_t3 temporarily for prod2_lo
+        sty zp_det_t3
 
         ; Compute det = prod1 - prod2 (signed 16-bit subtraction)
-        ; If det < 0, cull (check sign bit of result)
+        ; prod2_hi is still in A
+        tax                      ; save prod2_hi in X
         sec
-        lda _det_prod1_lo
-        sbc _det_prod2_lo
-        sta _det_result_lo      ; Low byte of det (not needed, just for completeness)
-        lda _det_prod1_hi
-        sbc _det_prod2_hi       ; High byte of det - sign bit in bit 7
-        bmi _cull               ; det < 0, backface cull
-        bne _no_cull            ; det > 0 (high byte != 0 and positive)
+        lda zp_det_t1            ; prod1_lo
+        sbc zp_det_t3            ; prod2_lo
+        tay                      ; save det_lo in Y
+        lda zp_det_t2            ; prod1_hi
+        stx zp_det_t3            ; restore prod2_hi for subtraction
+        sbc zp_det_t3            ; prod2_hi - high byte of det
+        bmi _cull                ; det < 0, backface cull
+        bne _no_cull             ; det > 0 (high byte != 0 and positive)
         ; High byte is 0, check low byte
-        lda _det_result_lo
-        beq _cull               ; det == 0, degenerate triangle, cull
-        ; det > 0, don't cull
-        jmp _no_cull
+        cpy #0
+        bne _no_cull             ; det > 0 (low byte != 0)
+        ; det == 0, degenerate triangle, fall through to cull
 
 _cull
-        rts                     ; Backface: don't draw
+        rts                     ; Backface or degenerate: don't draw
 
 _no_cull
 .endif
@@ -373,12 +374,7 @@ _skip_top_trap
 _done_triangle
         rts
 
-; Temporary storage
-_det_prod1_lo   .byte 0
-_det_prod1_hi   .byte 0
-_det_prod2_lo   .byte 0
-_det_prod2_hi   .byte 0
-_det_result_lo  .byte 0
+; Temporary storage (backface culling now reuses zp_det_t1-t4)
 _temp_half_lo   .byte 0
 _temp_half_hi   .byte 0
 
