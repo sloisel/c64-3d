@@ -100,10 +100,7 @@ mesh_fj_1       .fill MESH_MAX_FACES, 0
 mesh_fk_1       .fill MESH_MAX_FACES, 0
 mesh_fcol_1     .fill MESH_MAX_FACES, 0
 
-; Mesh properties
-mesh_num_verts  .byte 0
-mesh_num_faces_0 .byte 0        ; Number of faces in sub-mesh 0
-mesh_num_faces_1 .byte 0        ; Number of faces in sub-mesh 1
+; Mesh properties are now in ZP (zp_mesh_num_verts, zp_mesh_num_faces_0/1)
 
 ; Rotated Z per vertex (s8, for painter's algorithm sorting)
 mesh_rot_z      .fill MESH_MAX_VERTICES, 0
@@ -122,12 +119,7 @@ sf_position     .byte 0
 sf_face_idx     .byte 0
 sf_pos_temp     .byte 0
 
-mesh_px_lo      .byte 0    ; 16-bit signed world position X
-mesh_px_hi      .byte 0
-mesh_py_lo      .byte 0    ; 16-bit signed world position Y
-mesh_py_hi      .byte 0
-mesh_pz_lo      .byte 0    ; 16-bit signed world position Z
-mesh_pz_hi      .byte 0
+; Mesh position is now in ZP (zp_mesh_px/py/pz_lo/hi)
 mesh_theta      .byte 0    ; u8 rotation angle (0-255 = 0 to 2pi)
 
 ; Transformed screen coordinates (s8)
@@ -162,7 +154,7 @@ transform_mesh
 _tm_vertex_loop
         ; Check if done
         lda zp_vtx_idx
-        cmp mesh_num_verts
+        cmp zp_mesh_num_verts
         bcc _tm_do_vertex
         ; All vertices done, return success
         lda #0
@@ -267,10 +259,10 @@ _tm_do_vertex
         ; Add px
         clc
         lda zp_world_x_lo
-        adc mesh_px_lo
+        adc zp_mesh_px_lo
         sta zp_world_x_lo
         lda zp_world_x_hi
-        adc mesh_px_hi
+        adc zp_mesh_px_hi
         sta zp_world_x_hi
 
         ; world_y = ly + py (ly is s8, sign extend)
@@ -283,10 +275,10 @@ _tm_do_vertex
 +       sta zp_world_y_hi
         clc
         lda zp_world_y_lo
-        adc mesh_py_lo
+        adc zp_mesh_py_lo
         sta zp_world_y_lo
         lda zp_world_y_hi
-        adc mesh_py_hi
+        adc zp_mesh_py_hi
         sta zp_world_y_hi
 
         ; world_z = rot_z + pz (rot_z is s8, sign extend)
@@ -298,10 +290,10 @@ _tm_do_vertex
 +       sta zp_world_z_hi
         clc
         lda zp_world_z_lo
-        adc mesh_pz_lo
+        adc zp_mesh_pz_lo
         sta zp_world_z_lo
         lda zp_world_z_hi
-        adc mesh_pz_hi
+        adc zp_mesh_pz_hi
         sta zp_world_z_hi
 
         ; ----------------------------------------------------------------
@@ -411,7 +403,7 @@ _sf0_clear
         ; --- Phase 2: Count occurrences (SMC inc for speed) ---
         ldx #0
 _sf0_count_loop
-        cpx mesh_num_faces_0
+        cpx zp_mesh_num_faces_0
         beq _sf0_count_done
         lda mesh_fi_0,x
         tay
@@ -425,7 +417,7 @@ _sf0_count_done
 
         ; --- Phase 3: Prefix sum (backwards, 4x unrolled) ---
         ; A holds running position, eliminating redundant loads
-        lda mesh_num_faces_0
+        lda zp_mesh_num_faces_0
         ldx #255
 _sf0_prefix_loop
         sec
@@ -450,7 +442,7 @@ _sf0_prefix_loop
         ; --- Phase 4: Scatter (SMC for face index) ---
         ldx #0
 _sf0_scatter_loop
-        cpx mesh_num_faces_0
+        cpx zp_mesh_num_faces_0
         beq _sf0_scatter_done
         stx _sf0_face+1         ; SMC: patch immediate operand
         lda mesh_fi_0,x
@@ -496,7 +488,7 @@ _sf1_clear
         ; --- Phase 2: Count occurrences (SMC inc for speed) ---
         ldx #0
 _sf1_count_loop
-        cpx mesh_num_faces_1
+        cpx zp_mesh_num_faces_1
         beq _sf1_count_done
         lda mesh_fi_1,x
         tay
@@ -510,7 +502,7 @@ _sf1_count_done
 
         ; --- Phase 3: Prefix sum (backwards, 4x unrolled) ---
         ; A holds running position, eliminating redundant loads
-        lda mesh_num_faces_1
+        lda zp_mesh_num_faces_1
         ldx #255
 _sf1_prefix_loop
         sec
@@ -535,7 +527,7 @@ _sf1_prefix_loop
         ; --- Phase 4: Scatter (SMC for face index) ---
         ldx #0
 _sf1_scatter_loop
-        cpx mesh_num_faces_1
+        cpx zp_mesh_num_faces_1
         beq _sf1_scatter_done
         stx _sf1_face+1         ; SMC: patch immediate operand
         lda mesh_fi_1,x
@@ -584,12 +576,12 @@ render_mesh
 _rm_merge_loop
         ; Check if sub-mesh 0 exhausted
         lda _rm_idx_0
-        cmp mesh_num_faces_0
+        cmp zp_mesh_num_faces_0
         bcs _rm_only_1
 
         ; Check if sub-mesh 1 exhausted
         lda _rm_idx_1
-        cmp mesh_num_faces_1
+        cmp zp_mesh_num_faces_1
         bcs _rm_only_0
 
         ; Both have faces - compare rot_z (want larger z first = back-to-front)
@@ -641,7 +633,7 @@ _rm_render_1
 _rm_only_0
         ; Render remaining faces from sub-mesh 0
         lda _rm_idx_0
-        cmp mesh_num_faces_0
+        cmp zp_mesh_num_faces_0
         bcs _rm_done
         ldx _rm_idx_0
         lda face_order_0,x
@@ -652,7 +644,7 @@ _rm_only_0
 _rm_only_1
         ; Render remaining faces from sub-mesh 1
         lda _rm_idx_1
-        cmp mesh_num_faces_1
+        cmp zp_mesh_num_faces_1
         bcs _rm_done
         ldx _rm_idx_1
         lda face_order_1,x
@@ -670,7 +662,7 @@ _rm_done
         ; Simple loop through sorted faces
         ldx #0
 _rm_single_loop
-        cpx mesh_num_faces_0
+        cpx zp_mesh_num_faces_0
         bcs _rm_single_done
         lda face_order_0,x
         stx _rm_idx_0           ; Save loop counter

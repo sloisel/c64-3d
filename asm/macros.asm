@@ -393,6 +393,98 @@ mul16s_8u_hi_m .macro
 .endm
 
 ; ============================================================================
+; DIVISION
+; ============================================================================
+
+; div8s_8u_m - Signed 8-bit / unsigned 8-bit = 8.8 fixed point (inline macro)
+;
+; Input:  A = dividend (signed, -128 to 127)
+;         X = divisor  (unsigned, 1-255)
+; Output: Y:A = 8.8 result (Y=integer, A=fraction)
+;
+; Requires: zp_div_divisor, zp_div_dividend, zp_div_p0_hi in zero page
+;           recip_lo/hi lookup tables
+;           mul8x8_unsigned_m macro
+;
+; Inlined for ~72 cycles savings vs subroutine (eliminates JSR/RTS overhead)
+div8s_8u_m .macro
+        cpx #1
+        bne _\@not_one
+        ; Divisor=1: result is dividend<<8 (integer=dividend, fraction=0)
+        tay                     ; Y = integer part
+        lda #0                  ; A = fraction
+        jmp _\@done             ; skip to end
+
+_\@not_one
+        stx zp_div_divisor
+        cmp #$80
+        bcc _\@positive
+
+        ; ---- Negative dividend path ----
+        ; Negate dividend first
+        eor #$ff
+        clc
+        adc #1
+
+        ; Inline division core (dividend in A, divisor in zp_div_divisor)
+        sta zp_div_dividend
+        ldx zp_div_divisor
+        tay
+        lda recip_lo,x
+        tax
+        #mul8x8_unsigned_m
+        sta zp_div_p0_hi
+        ldx zp_div_divisor
+        ldy zp_div_dividend
+        lda recip_hi,x
+        tax
+        #mul8x8_unsigned_m
+        tay
+        lda zp_div_p0_hi
+        clc
+        adc prod_low
+        bcc _\@neg_no_carry
+        iny
+_\@neg_no_carry
+        ; Y:A has positive division result, now negate 16-bit
+        eor #$ff
+        clc
+        adc #1
+        pha                     ; save negated low byte
+        tya
+        eor #$ff
+        adc #0                  ; carry from low byte
+        tay                     ; Y = negated high byte
+        pla                     ; A = negated low byte
+        jmp _\@done
+
+_\@positive
+        ; ---- Positive dividend path ----
+        ; Inline division core
+        sta zp_div_dividend
+        ldx zp_div_divisor
+        tay
+        lda recip_lo,x
+        tax
+        #mul8x8_unsigned_m
+        sta zp_div_p0_hi
+        ldx zp_div_divisor
+        ldy zp_div_dividend
+        lda recip_hi,x
+        tax
+        #mul8x8_unsigned_m
+        tay
+        lda zp_div_p0_hi
+        clc
+        adc prod_low
+        bcc _\@done
+        iny
+        ; Result in Y:A (Y=integer, A=fraction)
+
+_\@done
+.endm
+
+; ============================================================================
 ; ASSEMBLER HELPERS
 ; ============================================================================
 

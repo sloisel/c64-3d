@@ -191,7 +191,7 @@ _no_cull
         tax                     ; X = divisor
 
         lda zp_dx_temp          ; A = dividend (signed)
-        jsr div8s_8u_v2         ; Result in Y:A (hi:lo), also in div_result_hi:div_result_lo
+        #div8s_8u_m         ; Result in Y:A (hi:lo), also in div_result_hi:div_result_lo
 
         sta zp_dx_ac_lo
         sty zp_dx_ac_hi
@@ -218,18 +218,18 @@ _no_cull
         lda zp_dx_ac_hi
         cmp #$80                ; Check sign
         ror a                   ; Arithmetic right shift high byte
-        sta _temp_half_hi
+        sta zp_temp_half_hi
         lda zp_dx_ac_lo
         ror a                   ; Rotate through carry
-        sta _temp_half_lo
+        sta zp_temp_half_lo
 
         ; Add to x_long
         clc
         lda zp_x_long_lo
-        adc _temp_half_lo
+        adc zp_temp_half_lo
         sta zp_x_long_lo
         lda zp_x_long_hi
-        adc _temp_half_hi
+        adc zp_temp_half_hi
         sta zp_x_long_hi
 
         ; ----------------------------------------------------------------
@@ -245,7 +245,9 @@ _no_cull
 
         lda zp_ay
         cmp zp_by
-        bcs _skip_top_trap      ; ay >= by, skip top trapezoid
+        bcc +                   ; ay < by, continue to top trapezoid
+        jmp _skip_top_trap      ; ay >= by, skip top trapezoid
++
 
         ; Compute short edge slope (A to B)
         ; dx_ab = ((bx - ax) << 8) / (by - ay)
@@ -260,7 +262,7 @@ _no_cull
         tax
 
         lda zp_dx_temp
-        jsr div8s_8u_v2
+        #div8s_8u_m
 
         sta zp_dx_short_lo
         sty zp_dx_short_hi
@@ -282,17 +284,17 @@ _no_cull
         lda zp_dx_short_hi
         cmp #$80
         ror a
-        sta _temp_half_hi
+        sta zp_temp_half_hi
         lda zp_dx_short_lo
         ror a
-        sta _temp_half_lo
+        sta zp_temp_half_lo
 
         clc
         lda zp_x_short_lo
-        adc _temp_half_lo
+        adc zp_temp_half_lo
         sta zp_x_short_lo
         lda zp_x_short_hi
-        adc _temp_half_hi
+        adc zp_temp_half_hi
         sta zp_x_short_hi
 
         ; Set trapezoid end
@@ -309,7 +311,9 @@ _skip_top_trap
 
         lda zp_by
         cmp zp_cy
-        bcs _done_triangle      ; by >= cy, skip bottom trapezoid
+        bcc +                   ; by < cy, continue to bottom trapezoid
+        jmp _done_triangle      ; by >= cy, skip bottom trapezoid
++
 
         ; Compute short edge slope (B to C)
         ; dx_bc = ((cx - bx) << 8) / (cy - by)
@@ -324,7 +328,7 @@ _skip_top_trap
         tax
 
         lda zp_dx_temp
-        jsr div8s_8u_v2
+        #div8s_8u_m
 
         sta zp_dx_short_lo
         sty zp_dx_short_hi
@@ -347,17 +351,17 @@ _skip_top_trap
         lda zp_dx_short_hi
         cmp #$80
         ror a
-        sta _temp_half_hi
+        sta zp_temp_half_hi
         lda zp_dx_short_lo
         ror a
-        sta _temp_half_lo
+        sta zp_temp_half_lo
 
         clc
         lda zp_x_short_lo
-        adc _temp_half_lo
+        adc zp_temp_half_lo
         sta zp_x_short_lo
         lda zp_x_short_hi
-        adc _temp_half_hi
+        adc zp_temp_half_hi
         sta zp_x_short_hi
 
         ; Update Y position (should already be at by from top trap, or ay if no top trap)
@@ -373,10 +377,6 @@ _skip_top_trap
 
 _done_triangle
         rts
-
-; Temporary storage (backface culling now reuses zp_det_t1-t4)
-_temp_half_lo   .byte 0
-_temp_half_hi   .byte 0
 
 ; ============================================================================
 ; ROUTINE: rasterize_trapezoid

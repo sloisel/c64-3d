@@ -251,6 +251,26 @@ zp_dri_saved_y  = $4e   ; saved y for draw_dual_row_intervals
 zp_m16m_u       = $4f   ; unsigned multiplier for mul16s_8u_hi_m
 zp_m16m_p1_hi   = $50   ; high byte of first product for mul16s_8u_hi_m
 
+; Division routine ZP temps (saves ~7 cycles per div call)
+zp_div_divisor  = $54
+zp_div_dividend = $55
+zp_div_p0_hi    = $56
+
+; Rasterizer temp for half-step calculation (saves ~12 cycles per triangle)
+zp_temp_half_lo = $57
+zp_temp_half_hi = $58
+
+; Mesh properties in ZP (saves ~1 cycle per access)
+zp_mesh_num_verts   = $59
+zp_mesh_num_faces_0 = $5a
+zp_mesh_num_faces_1 = $5b
+zp_mesh_px_lo   = $5c
+zp_mesh_px_hi   = $5d
+zp_mesh_py_lo   = $5e
+zp_mesh_py_hi   = $5f
+zp_mesh_pz_lo   = $60
+zp_mesh_pz_hi   = $61
+
 ; ----------------------------------------------------------------------------
 ; Constants
 ; ----------------------------------------------------------------------------
@@ -525,7 +545,7 @@ init_octahedron
         ; 2: +Y (-60, 104, 0)  3: -Y (60, -104, 0)
         ; 4: +Z (0, 0, 120)    5: -Z (0, 0, -120)
         lda #6
-        sta mesh_num_verts
+        sta zp_mesh_num_verts
 
         ; Vertex 0: (104, 60, 0)
         lda #104
@@ -575,9 +595,9 @@ init_octahedron
 
         ; 8 faces (all in mesh_0 for single-mesh mode)
         lda #8
-        sta mesh_num_faces_0
+        sta zp_mesh_num_faces_0
         lda #0
-        sta mesh_num_faces_1
+        sta zp_mesh_num_faces_1
 
         ; Face 0: i=0, j=4, k=3, color=1
         lda #0
@@ -661,18 +681,18 @@ init_octahedron
 
         ; Transform parameters: px=0, py=-25, pz=256, theta=20
         lda #0
-        sta mesh_px_lo
-        sta mesh_px_hi
+        sta zp_mesh_px_lo
+        sta zp_mesh_px_hi
 
         lda #<(-25)
-        sta mesh_py_lo
+        sta zp_mesh_py_lo
         lda #>(-25)
-        sta mesh_py_hi
+        sta zp_mesh_py_hi
 
         lda #<256
-        sta mesh_pz_lo
+        sta zp_mesh_pz_lo
         lda #>256
-        sta mesh_pz_hi
+        sta zp_mesh_pz_hi
 
         lda #20
         sta mesh_theta
@@ -711,7 +731,7 @@ div8s_8u_v2
         rts
 
 _div2_normal
-        stx div_divisor
+        stx zp_div_divisor
 
         cmp #$80
         bcc _div2_pos
@@ -742,35 +762,31 @@ _div2_pos
         rts
 
 _div2_core
-        sta div_dividend
+        sta zp_div_dividend
 
         ; First: A × recip_lo
-        ldx div_divisor
+        ldx zp_div_divisor
         tay
         lda recip_lo,x
         tax
         #mul8x8_unsigned_m
-        sta div_p0_hi
+        sta zp_div_p0_hi
 
         ; Second: A × recip_hi
-        ldx div_divisor
-        ldy div_dividend
+        ldx zp_div_divisor
+        ldy zp_div_dividend
         lda recip_hi,x
         tax
         #mul8x8_unsigned_m
 
         ; Combine
         tay
-        lda div_p0_hi
+        lda zp_div_p0_hi
         clc
         adc prod_low
         bcc +
         iny
 +       rts
-
-div_divisor     .byte 0
-div_dividend    .byte 0
-div_p0_hi       .byte 0
 
 cycle_count_lo  .byte 0
 cycle_count_hi  .byte 0
@@ -840,7 +856,7 @@ init_grunt
         jsr load_grunt_frame
 
         lda #GRUNT_NUM_VERTICES
-        sta mesh_num_verts
+        sta zp_mesh_num_verts
 
         ; Copy sub-mesh 0 faces (147 faces)
         ldx #0
@@ -858,7 +874,7 @@ _ig_faces0
         bne _ig_faces0
 
         lda #GRUNT_NUM_FACES_0
-        sta mesh_num_faces_0
+        sta zp_mesh_num_faces_0
 
         ; Copy sub-mesh 1 faces (148 faces)
         ldx #0
@@ -876,20 +892,20 @@ _ig_faces1
         bne _ig_faces1
 
         lda #GRUNT_NUM_FACES_1
-        sta mesh_num_faces_1
+        sta zp_mesh_num_faces_1
 
         ; Transform parameters: px=0, py=0, pz=1500, theta=20
         lda #0
-        sta mesh_px_lo
-        sta mesh_px_hi
-        sta mesh_py_lo
-        sta mesh_py_hi
+        sta zp_mesh_px_lo
+        sta zp_mesh_px_hi
+        sta zp_mesh_py_lo
+        sta zp_mesh_py_hi
 
         ; pz = 200 (s16) = $00C8
         lda #<200
-        sta mesh_pz_lo
+        sta zp_mesh_pz_lo
         lda #>200
-        sta mesh_pz_hi
+        sta zp_mesh_pz_hi
 
         ; theta = 20
         lda #20

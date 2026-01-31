@@ -9,8 +9,8 @@
 ## Current FPS (PAL 50Hz)
 | Model | Full Render | Geometry Only | Rasterization Only |
 |-------|-------------|---------------|---------------------|
-| Octahedron | 24.88 FPS | 43.31 FPS | - |
-| Zombie | 2.50 FPS | 3.75 FPS | - |
+| Octahedron | 25.63 FPS | 43.31 FPS | - |
+| Zombie | 2.60 FPS | 3.75 FPS | - |
 
 ### FPS History
 | Date | Octahedron | Zombie | Notes |
@@ -20,12 +20,14 @@
 | 2026-01-31b | 22.43 FPS | 2.22 FPS | ZP temps, radix sort, sign extend |
 | 2026-01-31c | 24.68 FPS | 2.47 FPS | Backface culling ZP reuse |
 | 2026-01-31d | 24.88 FPS | 2.50 FPS | Radix sort SMC optimizations |
+| 2026-01-31e | 25.18 FPS | 2.62 FPS | Move hot variables to ZP |
+| 2026-01-31f | 25.63 FPS | 2.60 FPS | Inline div8s_8u_m macro |
 
 ## Time Breakdown (ms per frame)
 | Model | Total | Geometry | Rasterization | Geometry % |
 |-------|-------|----------|---------------|------------|
-| Octahedron | 40.2 | ~19 | ~21 | ~47% |
-| Zombie | 400 | ~216 | ~184 | ~54% |
+| Octahedron | 39.0 | ~18 | ~21 | ~46% |
+| Zombie | 385 | ~208 | ~177 | ~54% |
 
 Geometry and rasterization are roughly 50/50 for both models.
 
@@ -34,8 +36,8 @@ PAL C64: 985,248 Hz, 50 Hz refresh, ~19,705 cycles/vsync
 
 | Model | Vsyncs/Frame | Cycles/Frame |
 |-------|--------------|--------------|
-| Octahedron | 2.01 | ~39,600 |
-| Zombie | 20.00 | ~394,000 |
+| Octahedron | 1.95 | ~38,400 |
+| Zombie | 19.23 | ~379,000 |
 
 ## Backface Culling Impact (measured at baseline)
 | Model | Culling ON | Culling OFF | Speedup |
@@ -98,6 +100,8 @@ bpl loop                ; 3
 11. **Geometry micro-optimizations** (2026-01-31) - ZP temps for transform (~1 cycle/access), radix sort prefix sum redundant load removal, compact sign extension pattern, jmp→bne in loops. Speedup: 5.5% octahedron (21.26→22.43), 2.3% zombie (2.17→2.22)
 12. **Backface culling ZP reuse** (2026-01-31) - Reuse zp_det_t1-t4 for intermediate products instead of main memory temporaries, use X/Y registers to hold values. Saves ~8 cycles per triangle from ZP access and reduced stores. Speedup: 10% octahedron (22.43→24.68), 11% zombie (2.22→2.47)
 13. **Radix sort SMC optimizations** (2026-01-31) - Pre-XOR rot_z when storing (saves eor in count+scatter), page-aligned radix_count with SMC `inc` in count phase (saves lda/clc/adc/sta), SMC for face index in scatter. Saves ~10 cycles/face in sort. Speedup: 0.8% octahedron (24.68→24.88), 1.2% zombie (2.47→2.50)
+14. **Move hot variables to ZP** (2026-01-31) - Division temps (div_divisor/dividend/p0_hi), rasterizer temps (_temp_half_lo/hi), mesh properties (num_verts, num_faces_0/1, px/py/pz). Saves 1 cycle per access. Speedup: 1.2% octahedron (24.88→25.18), 4.8% zombie (2.50→2.62)
+15. **Inline div8s_8u_m macro** (2026-01-31) - Eliminates JSR/RTS overhead for 3 division calls per triangle. Adds ~700 bytes code size. Speedup: 1.8% octahedron (25.18→25.63), 0% zombie (code size increase may offset gains)
 
 ### Considered but Not Implemented
 1. **SMC for single-row endpoints** - patching cost (~20 cycles) exceeds savings (~3 cycles)
